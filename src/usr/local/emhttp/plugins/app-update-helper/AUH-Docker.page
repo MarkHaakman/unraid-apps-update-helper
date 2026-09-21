@@ -9,7 +9,7 @@ Title="App Update Helper"
     .status-patch { color: #4caf50; font-weight: bold; }
     .status-build { color: #00bcd4; }
     .update-cell-tooltip { cursor: help; }
-    .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid #ccc; border-radius: 50%; border-top-color: #333; animation: spin 1s linear infinite; }
+    .plugin-spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid #ccc; border-radius: 50%; border-top-color: #333; animation: spin 1s linear infinite; }
     @keyframes spin { to { transform: rotate(360deg); } }
 </style>
 
@@ -30,7 +30,7 @@ Title="App Update Helper"
     </thead>
     <tbody id="app-versions-body">
         <tr>
-            <td colspan="6" style="text-align:center;"><div class="spinner"></div> Fetching versions... this may take a moment.</td>
+            <td colspan="6" style="text-align:center;"><div class="plugin-spinner"></div> Fetching versions... this may take a moment.</td>
         </tr>
     </tbody>
 </table>
