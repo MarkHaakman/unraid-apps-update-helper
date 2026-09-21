@@ -1,0 +1,101 @@
+Menu="Docker"
+Title="App Update Helper"
+---
+<style>
+    .version-table { width: 100%; border-collapse: collapse; }
+    .version-table th, .version-table td { padding: 10px; text-align: left; border-bottom: 1px solid #333; }
+    .status-major { color: #ff4c4c; font-weight: bold; }
+    .status-minor { color: #ffb84d; font-weight: bold; }
+    .status-patch { color: #4caf50; font-weight: bold; }
+    .status-build { color: #00bcd4; }
+    .update-cell-tooltip { cursor: help; }
+    .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid #ccc; border-radius: 50%; border-top-color: #333; animation: spin 1s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+
+<div class="title">
+    <span class="left">Docker Application Versions</span>
+</div>
+
+<table class="version-table" id="app-versions-table">
+    <thead>
+        <tr>
+            <th>Container Name</th>
+            <th>Image</th>
+            <th>Current Version</th>
+            <th>Newest Version</th>
+            <th>Update Type</th>
+            <th>Release Notes</th>
+        </tr>
+    </thead>
+    <tbody id="app-versions-body">
+        <tr>
+            <td colspan="6" style="text-align:center;"><div class="spinner"></div> Fetching versions... this may take a moment.</td>
+        </tr>
+    </tbody>
+</table>
+
+<script>
+function getVersionTooltip(current, newest, type) {
+    if (!type || current === "Unknown" || newest === "Unknown") return "";
+    
+    let cParts = current.split('-');
+    let rParts = newest.split('-');
+    let cBase = cParts[0].split('.');
+    let rBase = rParts[0].split('.');
+    
+    let cMajor = cBase[0] || 'x';
+    let rMajor = rBase[0] || 'x';
+    let cMinor = cBase[1] || 'x';
+    let rMinor = rBase[1] || 'x';
+    let cPatch = cBase[2] || 'x';
+    let rPatch = rBase[2] || 'x';
+    
+    let cSuffix = cParts[1] ? '-' + cParts[1] : '';
+    let rSuffix = rParts[1] ? '-' + rParts[1] : '';
+    
+    if (type === 'Major') {
+        return `${cMajor}.x.x -> ${rMajor}.x.x`;
+    } else if (type === 'Minor') {
+        return `x.${cMinor}.x -> x.${rMinor}.x`;
+    } else if (type === 'Patch') {
+        return `x.x.${cPatch} -> x.x.${rPatch}`;
+    } else if (type === 'Build') {
+        return `x.x.x${cSuffix} -> x.x.x${rSuffix}`;
+    }
+    return `${current} -> ${newest}`;
+}
+
+$(function() {
+    $.getJSON("/plugins/app-update-helper/api.php", function(data) {
+        let html = "";
+        if(!data || data.length === 0) {
+            html = "<tr><td colspan='6' style='text-align:center;'>No containers found.</td></tr>";
+        } else {
+            data.forEach(function(app) {
+                let statusClass = app.update_type ? "status-" + app.update_type.toLowerCase() : "";
+                let releaseLink = app.release_notes ? `<a href="${app.release_notes}" target="_blank">View Notes</a>` : "N/A";
+                let tooltipText = getVersionTooltip(app.current_version, app.newest_version, app.update_type);
+                
+                let updateTypeText = app.update_type || 'Up to date';
+                let updateTypeCell = tooltipText 
+                    ? `<td class="${statusClass} update-cell-tooltip" title="${tooltipText}">${updateTypeText}</td>` 
+                    : `<td class="${statusClass}">${updateTypeText}</td>`;
+                
+                html += `<tr>
+                    <td><strong>${app.name}</strong></td>
+                    <td>${app.image}</td>
+                    <td>${app.current_version}</td>
+                    <td>${app.newest_version}</td>
+                    ${updateTypeCell}
+                    <td>${releaseLink}</td>
+                </tr>`;
+            });
+        }
+        $("#app-versions-body").html(html);
+    }).fail(function(jqXHR, textStatus, errorThrown) {
+        console.error("Fetch error: ", textStatus, errorThrown);
+        $("#app-versions-body").html("<tr><td colspan='6' style='text-align:center; color:red;'>Failed to fetch version data. Check console for details.</td></tr>");
+    });
+});
+</script>
