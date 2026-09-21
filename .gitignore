@@ -3,3 +3,4 @@
 .php-cs-fixer.cache
 vendor
 unraid-plugin-customizer
+/.idea/
