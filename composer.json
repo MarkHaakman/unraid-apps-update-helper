@@ -4,7 +4,7 @@
         "friendsofphp/php-cs-fixer": "^3.64"
     },
     "scripts": {
-        "post-install-cmd": "git config core.hooksPath .githooks",
-        "post-update-cmd": "git config core.hooksPath .githooks"
+        "post-install-cmd": "git rev-parse --git-dir > /dev/null 2>&1 && git config core.hooksPath .githooks || true",
+        "post-update-cmd": "git rev-parse --git-dir > /dev/null 2>&1 && git config core.hooksPath .githooks || true"
     }
 }
