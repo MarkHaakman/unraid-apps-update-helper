@@ -1,6 +1,11 @@
 Menu="Docker"
 Title="App Update Helper"
 ---
+<?php
+require_once '/usr/local/emhttp/plugins/app-update-helper/include/common.php';
+
+$auhBackupReady = auhBackupDestinationValid(auhLoadConfig());
+?>
 <style>
     .version-table { width: 100%; border-collapse: collapse; }
     .version-table th, .version-table td { padding: 10px; text-align: left; border-bottom: 1px solid #333; }
@@ -29,8 +34,18 @@ Title="App Update Helper"
     .has-tooltip.tooltip-active::after {
         display: block;
     }
-    .plugin-spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid #ccc; border-radius: 50%; border-top-color: #333; animation: spin 1s linear infinite; }
+    .plugin-spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid #ccc; border-radius: 50%; border-top-color: #333; animation: spin 1s linear infinite; vertical-align: middle; }
     @keyframes spin { to { transform: rotate(360deg); } }
+    .auh-actions { white-space: nowrap; }
+    .auh-actions button { margin: 0 4px 0 0; padding: 4px 10px; min-width: 0; }
+    .auh-job { display: inline-block; margin-left: 4px; }
+    .auh-job-done { color: #4caf50; }
+    .auh-job-failed { color: #ff4c4c; }
+    .auh-modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0, 0, 0, 0.6); z-index: 1000; }
+    .auh-modal { position: absolute; top: 10%; left: 50%; transform: translateX(-50%); width: min(900px, 90vw); background: #1c1c1c; color: #eee; border-radius: 6px; padding: 16px; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5); }
+    .auh-modal h3 { margin: 0 0 10px 0; font-size: 16px; }
+    .auh-modal pre { height: 50vh; overflow: auto; background: #000; color: #ddd; padding: 10px; margin: 0 0 10px 0; font-size: 12px; white-space: pre-wrap; word-break: break-word; }
+    .auh-modal .auh-modal-footer { text-align: right; }
 </style>
 
 <div class="title">
@@ -46,34 +61,61 @@ Title="App Update Helper"
             <th class="has-tooltip" data-tooltip="Major: breaking or major release&#10;Minor: new features, backwards compatible&#10;Patch: bug fixes only&#10;Build: same version, new build/tag&#10;Update Available: an update exists but versions couldn't be compared">Update Type</th>
             <th>Released</th>
             <th>Release Notes</th>
+            <th>Actions</th>
         </tr>
     </thead>
     <tbody id="app-versions-body">
         <tr>
-            <td colspan="6" style="text-align:center;"><div class="plugin-spinner"></div> Fetching versions... this may take a moment.</td>
+            <td colspan="7" style="text-align:center;"><div class="plugin-spinner"></div> Fetching versions... this may take a moment.</td>
         </tr>
     </tbody>
 </table>
 
+<div class="auh-modal-overlay" id="auh-log-overlay">
+    <div class="auh-modal">
+        <h3 id="auh-log-title"></h3>
+        <pre id="auh-log-content"></pre>
+        <div class="auh-modal-footer">
+            <input type="button" id="auh-log-close" value="Close">
+        </div>
+    </div>
+</div>
+
 <script>
+const AUH_JOBS_URL = "/plugins/app-update-helper/jobs.php";
+const AUH_CSRF_TOKEN = <?= json_encode(auhCsrfToken()); ?>;
+const AUH_BACKUP_READY = <?= $auhBackupReady ? 'true' : 'false'; ?>;
+
+let auhApps = {};          // container name -> row data from api.php
+let auhJobs = [];          // job list from jobs.php, oldest first
+let auhFinishedIds = null; // ids of finished jobs seen in the previous poll
+let auhPollTimer = null;
+let auhPollXhr = null;     // in-flight status request; only one may run at a time
+let auhLogJob = null;     // job whose log is shown in the modal
+let auhLogOffset = 0;
+
+function escapeHtml(value) {
+    return String(value ?? '').replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
+}
+
 function getVersionTooltip(current, newest, type) {
     if (!type || current === "Unknown" || newest === "Unknown") return "";
-    
+
     let cParts = current.split('-');
     let rParts = newest.split('-');
     let cBase = cParts[0].split('.');
     let rBase = rParts[0].split('.');
-    
+
     let cMajor = cBase[0] || 'x';
     let rMajor = rBase[0] || 'x';
     let cMinor = cBase[1] || 'x';
     let rMinor = rBase[1] || 'x';
     let cPatch = cBase[2] || 'x';
     let rPatch = rBase[2] || 'x';
-    
+
     let cSuffix = cParts[1] ? '-' + cParts[1] : '';
     let rSuffix = rParts[1] ? '-' + rParts[1] : '';
-    
+
     if (type === 'Major') {
         return `${cMajor}.x.x -> ${rMajor}.x.x`;
     } else if (type === 'Minor') {
@@ -114,6 +156,182 @@ function formatVersionDisplay(version, type) {
     return result;
 }
 
+function isJobActive(job) {
+    return job.status === 'queued' || job.status === 'running';
+}
+
+function latestJobFor(name) {
+    for (let i = auhJobs.length - 1; i >= 0; i--) {
+        if (auhJobs[i].container === name) return auhJobs[i];
+    }
+    return null;
+}
+
+function jobLabel(job) {
+    return job.mode === 'backup_update' ? 'Backup & update' : 'Update';
+}
+
+function actionButton(name, mode, text, disabledReason) {
+    let button = `<button type="button" class="auh-action" data-container="${escapeHtml(name)}" data-mode="${mode}"${disabledReason ? ' disabled' : ''}>${text}</button>`;
+    return disabledReason ? `<span class="has-tooltip" data-tooltip="${escapeHtml(disabledReason)}">${button}</span>` : button;
+}
+
+function renderActions(name) {
+    let app = auhApps[name];
+    let job = latestJobFor(name);
+    let active = job && isJobActive(job);
+    let html = "";
+
+    if (app && app.update_type) {
+        let notManaged = app.managed ? "" : "Not managed by Unraid Docker templates";
+        let busy = active ? "A job for this container is already queued or running" : "";
+        html += actionButton(name, 'update', 'Update', notManaged || busy);
+        html += actionButton(name, 'backup_update', 'Backup &amp; Update',
+            notManaged || busy || (AUH_BACKUP_READY ? "" : "Set a backup destination in Settings > App Update Helper first"));
+    }
+
+    if (job) {
+        let logLink = `<a href="#" class="auh-view-log" data-job="${escapeHtml(job.id)}">View log</a>`;
+        if (job.status === 'queued') {
+            html += `<span class="auh-job">Queued · ${logLink}</span>`;
+        } else if (job.status === 'running') {
+            html += `<span class="auh-job"><span class="plugin-spinner"></span> Running · ${logLink}</span>`;
+        } else if (job.status === 'done') {
+            html += `<span class="auh-job auh-job-done">&#10003; ${jobLabel(job)} done · ${logLink}</span>`;
+        } else {
+            html += `<span class="auh-job auh-job-failed has-tooltip" data-tooltip="${escapeHtml(job.message)}">&#10007; ${jobLabel(job)} failed · ${logLink}</span>`;
+        }
+    }
+    return html;
+}
+
+function renderAllActions() {
+    $("#app-versions-body td.auh-actions").each(function() {
+        $(this).html(renderActions($(this).attr('data-container')));
+    });
+}
+
+function loadTable() {
+    $.getJSON("/plugins/app-update-helper/api.php", function(data) {
+        let html = "";
+        auhApps = {};
+        if(!data || data.length === 0) {
+            html = "<tr><td colspan='7' style='text-align:center;'>No containers found.</td></tr>";
+        } else {
+            data.forEach(function(app) {
+                auhApps[app.name] = app;
+                let statusClass = app.update_type ? "status-" + app.update_type.toLowerCase() : "";
+                let releaseLink = app.release_notes ? `<a href="${escapeHtml(app.release_notes)}" target="_blank">View Notes</a>` : "N/A";
+                let tooltipText = getVersionTooltip(app.current_version, app.newest_version, app.update_type);
+
+                let updateTypeText = app.update_type || 'Up to date';
+                let updateTypeCell = tooltipText
+                    ? `<td class="${statusClass} has-tooltip" data-tooltip="${escapeHtml(tooltipText)}">${updateTypeText}</td>`
+                    : `<td class="${statusClass}">${updateTypeText}</td>`;
+
+                html += `<tr>
+                    <td class="has-tooltip" data-tooltip="${escapeHtml(app.image)}"><strong>${escapeHtml(app.name)}</strong></td>
+                    <td>${formatVersionDisplay(escapeHtml(app.current_version), app.update_type)}</td>
+                    <td>${formatVersionDisplay(escapeHtml(app.newest_version), app.update_type)}</td>
+                    ${updateTypeCell}
+                    <td>${app.released || ''}</td>
+                    <td>${releaseLink}</td>
+                    <td class="auh-actions" data-container="${escapeHtml(app.name)}">${renderActions(app.name)}</td>
+                </tr>`;
+            });
+        }
+        $("#app-versions-body").html(html);
+    }).fail(function(jqXHR, textStatus, errorThrown) {
+        console.error("Fetch error: ", textStatus, errorThrown);
+        $("#app-versions-body").html("<tr><td colspan='7' style='text-align:center; color:red;'>Failed to fetch version data. Check console for details.</td></tr>");
+    });
+}
+
+function updateLogTitle() {
+    let job = auhJobs.find(j => j.id === auhLogJob);
+    if (!job) return;
+    let status = {queued: 'queued', running: 'running', done: 'finished', failed: 'failed'}[job.status] || job.status;
+    $("#auh-log-title").text(`${jobLabel(job)} of ${job.container} (${status})`);
+}
+
+function openLog(jobId) {
+    auhLogJob = jobId;
+    auhLogOffset = 0;
+    $("#auh-log-content").text("");
+    updateLogTitle();
+    $("#auh-log-overlay").show();
+    pollStatus();
+}
+
+function closeLog() {
+    auhLogJob = null;
+    $("#auh-log-overlay").hide();
+}
+
+function pollStatus() {
+    clearTimeout(auhPollTimer);
+    if (auhPollXhr) {
+        auhPollXhr.abort();
+    }
+    let params = {action: 'status'};
+    if (auhLogJob) {
+        params.job = auhLogJob;
+        params.offset = auhLogOffset;
+    }
+
+    auhPollXhr = $.getJSON(AUH_JOBS_URL, params);
+    auhPollXhr.done(function(response) {
+        auhPollXhr = null;
+        auhJobs = response.jobs || [];
+
+        // Only append log output for the job and offset this request asked for;
+        // anything else is stale (the modal was reopened or switched meanwhile).
+        if (response.log && response.log.job === auhLogJob && params.job === auhLogJob && params.offset === auhLogOffset) {
+            let pre = $("#auh-log-content");
+            if (response.log.content) {
+                // Drop the queue placeholder once real output arrives.
+                pre.text((auhLogOffset === 0 ? "" : pre.text()) + response.log.content);
+                pre.scrollTop(pre[0].scrollHeight);
+            } else if (auhLogOffset === 0) {
+                pre.text("Waiting in queue...\n");
+            }
+            auhLogOffset = response.log.offset;
+        }
+        updateLogTitle();
+        renderAllActions();
+
+        // Reload versions whenever a job finishes so updated rows show their new state.
+        let finished = auhJobs.filter(j => !isJobActive(j)).map(j => j.id);
+        if (auhFinishedIds !== null && finished.some(id => !auhFinishedIds.has(id))) {
+            loadTable();
+        }
+        auhFinishedIds = new Set(finished);
+
+        if (auhJobs.some(isJobActive)) {
+            auhPollTimer = setTimeout(pollStatus, 1000);
+        }
+    }).fail(function(jqXHR, textStatus) {
+        if (textStatus === 'abort') {
+            return; // superseded by a newer pollStatus() call
+        }
+        auhPollXhr = null;
+        auhPollTimer = setTimeout(pollStatus, 3000);
+    });
+}
+
+function enqueueJob(name, mode) {
+    $.post(AUH_JOBS_URL, {csrf_token: AUH_CSRF_TOKEN, action: 'enqueue', container: name, mode: mode}, null, 'json')
+        .done(function(response) {
+            auhJobs.push(response.job);
+            renderAllActions();
+            openLog(response.job.id);
+        })
+        .fail(function(jqXHR) {
+            let message = (jqXHR.responseJSON && jqXHR.responseJSON.error) || "Request failed";
+            swal({title: "Could not start job", text: message, type: "error"});
+        });
+}
+
 $(function() {
     // Native titles don't show on tap on mobile, so tooltips are shown/hidden
     // via a tap-toggled class instead (hover still works on desktop via CSS).
@@ -129,35 +347,45 @@ $(function() {
         $('.has-tooltip').removeClass('tooltip-active');
     });
 
-    $.getJSON("/plugins/app-update-helper/api.php", function(data) {
-        let html = "";
-        if(!data || data.length === 0) {
-            html = "<tr><td colspan='6' style='text-align:center;'>No containers found.</td></tr>";
-        } else {
-            data.forEach(function(app) {
-                let statusClass = app.update_type ? "status-" + app.update_type.toLowerCase() : "";
-                let releaseLink = app.release_notes ? `<a href="${app.release_notes}" target="_blank">View Notes</a>` : "N/A";
-                let tooltipText = getVersionTooltip(app.current_version, app.newest_version, app.update_type);
-                
-                let updateTypeText = app.update_type || 'Up to date';
-                let updateTypeCell = tooltipText
-                    ? `<td class="${statusClass} has-tooltip" data-tooltip="${tooltipText}">${updateTypeText}</td>`
-                    : `<td class="${statusClass}">${updateTypeText}</td>`;
+    $(document).on('click', '.auh-action', function(e) {
+        e.stopPropagation();
+        // attr() rather than data(): jQuery would coerce numeric-looking names to numbers
+        let name = $(this).attr('data-container');
+        let mode = $(this).attr('data-mode');
+        let app = auhApps[name];
+        if (!app) return;
 
-                html += `<tr>
-                    <td class="has-tooltip" data-tooltip="${app.image}"><strong>${app.name}</strong></td>
-                    <td>${formatVersionDisplay(app.current_version, app.update_type)}</td>
-                    <td>${formatVersionDisplay(app.newest_version, app.update_type)}</td>
-                    ${updateTypeCell}
-                    <td>${app.released || ''}</td>
-                    <td>${releaseLink}</td>
-                </tr>`;
-            });
+        let backup = mode === 'backup_update';
+        let text = `<b>${escapeHtml(name)}</b><br>${escapeHtml(app.current_version)} &rarr; ${escapeHtml(app.newest_version)} (${escapeHtml(app.update_type)})`;
+        if (backup) {
+            text += "<br><br>The container's appdata will be backed up first. The update is skipped if the backup fails.";
         }
-        $("#app-versions-body").html(html);
-    }).fail(function(jqXHR, textStatus, errorThrown) {
-        console.error("Fetch error: ", textStatus, errorThrown);
-        $("#app-versions-body").html("<tr><td colspan='6' style='text-align:center; color:red;'>Failed to fetch version data. Check console for details.</td></tr>");
+        swal({
+            title: backup ? "Backup & update container?" : "Update container?",
+            text: text,
+            type: "warning",
+            html: true,
+            showCancelButton: true,
+            confirmButtonText: backup ? "Backup & Update" : "Update",
+            cancelButtonText: "Cancel"
+        }, function(confirmed) {
+            if (confirmed) {
+                enqueueJob(name, mode);
+            }
+        });
     });
+
+    $(document).on('click', '.auh-view-log', function(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        openLog($(this).attr('data-job'));
+    });
+    $("#auh-log-close").on('click', closeLog);
+    $("#auh-log-overlay").on('click', function(e) {
+        if (e.target === this) closeLog();
+    });
+
+    loadTable();
+    pollStatus(); // re-attaches to jobs still queued/running from a previous visit
 });
 </script>

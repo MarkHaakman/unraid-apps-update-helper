@@ -1,0 +1,82 @@
+Menu="Utilities"
+Title="App Update Helper"
+Icon="arrow-circle-o-up"
+Markdown="false"
+---
+<?php
+require_once '/usr/local/emhttp/plugins/app-update-helper/include/common.php';
+
+$auhConfig = auhLoadConfig();
+$auhValue  = fn (string $key): string => htmlspecialchars($auhConfig[$key] ?? '', ENT_QUOTES);
+$auhSelect = fn (string $key, string $option): string => ($auhConfig[$key] ?? '') === $option ? ' selected' : '';
+?>
+<form method="POST" action="/update.php" target="progressFrame">
+    <input type="hidden" name="#file" value="app-update-helper/app-update-helper.cfg">
+    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars(auhCsrfToken(), ENT_QUOTES); ?>">
+
+    <div class="title"><span class="left">Backup before update</span></div>
+
+    <dl>
+        <dt>Backup destination:</dt>
+        <dd><input type="text" name="backup_destination" value="<?= $auhValue('backup_destination'); ?>" placeholder="/mnt/user/backups/app-update-helper" style="width:400px"></dd>
+    </dl>
+    <blockquote class="inline_help">
+        <p>Existing, writable directory. Each backup is written to <code>&lt;destination&gt;/&lt;container&gt;/&lt;container&gt;_&lt;timestamp&gt;.tar[.gz|.zst]</code>. "Backup &amp; Update" is disabled until this is set.</p>
+    </blockquote>
+
+    <dl>
+        <dt>Compression:</dt>
+        <dd>
+            <select name="backup_compression">
+                <option value="none"<?= $auhSelect('backup_compression', 'none'); ?>>None (.tar)</option>
+                <option value="gzip"<?= $auhSelect('backup_compression', 'gzip'); ?>>gzip (.tar.gz)</option>
+                <option value="zstd"<?= $auhSelect('backup_compression', 'zstd'); ?>>zstd, multi-core (.tar.zst)</option>
+            </select>
+        </dd>
+    </dl>
+
+    <dl>
+        <dt>Backups to keep per container:</dt>
+        <dd><input type="number" min="0" name="backup_retention" value="<?= $auhValue('backup_retention'); ?>" style="width:80px"></dd>
+    </dl>
+    <blockquote class="inline_help">
+        <p>After a successful backup, older backups of that container beyond this number are deleted. 0 keeps all backups.</p>
+    </blockquote>
+
+    <dl>
+        <dt>Stop container during backup:</dt>
+        <dd>
+            <select name="backup_stop_container">
+                <option value="yes"<?= $auhSelect('backup_stop_container', 'yes'); ?>>Yes</option>
+                <option value="no"<?= $auhSelect('backup_stop_container', 'no'); ?>>No</option>
+            </select>
+        </dd>
+    </dl>
+    <blockquote class="inline_help">
+        <p>Stopping gives a consistent backup (e.g. of databases). The container is started again after the update if it was running before.</p>
+    </blockquote>
+
+    <dl>
+        <dt>Exclusions:</dt>
+        <dd><input type="text" name="backup_exclusions" value="<?= $auhValue('backup_exclusions'); ?>" placeholder="*/cache/*,*/logs/*" style="width:400px"></dd>
+    </dl>
+    <blockquote class="inline_help">
+        <p>Comma-separated patterns passed to <code>tar --exclude</code>.</p>
+    </blockquote>
+
+    <dl>
+        <dt>Appdata roots:</dt>
+        <dd><input type="text" name="appdata_roots" value="<?= $auhValue('appdata_roots'); ?>" style="width:400px"></dd>
+    </dl>
+    <blockquote class="inline_help">
+        <p>Comma-separated. Only a container's host paths inside one of these directories are backed up; media shares and other mappings are skipped.</p>
+    </blockquote>
+
+    <dl>
+        <dt>&nbsp;</dt>
+        <dd>
+            <input type="submit" name="#apply" value="Apply">
+            <input type="button" value="Done" onclick="done()">
+        </dd>
+    </dl>
+</form>

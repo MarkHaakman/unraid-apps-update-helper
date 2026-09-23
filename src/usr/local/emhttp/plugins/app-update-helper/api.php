@@ -1,5 +1,7 @@
 <?php
 
+require_once __DIR__ . '/include/common.php';
+
 header('Content-Type: application/json');
 
 // --- HELPER FUNCTIONS ---
@@ -389,7 +391,8 @@ foreach ($containers as $c) {
         'newest_version'  => $remote_version,
         'update_type'     => $update_type,
         'release_notes'   => $release_notes,
-        'released'        => $released
+        'released'        => $released,
+        'managed'         => auhHasUserTemplate($name),
     ];
 }
 

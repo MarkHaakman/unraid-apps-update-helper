@@ -5,6 +5,11 @@ parameters:
     - page
   paths:
     - src
+  scanFiles:
+    # Page files require this via its absolute Unraid path, which PHPStan can't resolve
+    - src/usr/local/emhttp/plugins/app-update-helper/include/common.php
+  typeAliases:
+    Job: 'array{id: string, container: string, mode: string, status: string, created: int, started: int, finished: int, message: string}'
   excludePaths:
     - */vendor/*
   ignoreErrors:

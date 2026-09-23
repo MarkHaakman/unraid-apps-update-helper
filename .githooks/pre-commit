@@ -23,7 +23,7 @@ if [ ! -x vendor/bin/php-cs-fixer ] || [ ! -x vendor/bin/phpstan ]; then
 fi
 
 echo "pre-commit: running PHP-CS-Fixer on staged src/ files..."
-vendor/bin/php-cs-fixer fix --diff --path-mode=intersection -- $STAGED_SRC_FILES
+vendor/bin/php-cs-fixer fix --config=.php-cs-fixer.dist.php --diff --path-mode=intersection -- $STAGED_SRC_FILES
 git add -- $STAGED_SRC_FILES
 
 echo "pre-commit: running PHPStan on src/..."
