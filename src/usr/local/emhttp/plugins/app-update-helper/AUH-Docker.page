@@ -85,6 +85,34 @@ function getVersionTooltip(current, newest, type) {
     return `${current} -> ${newest}`;
 }
 
+function formatVersionDisplay(version, type) {
+    if (!type || version === "Unknown") return version;
+
+    if (type === 'Update Available') {
+        return `<u>${version}</u>`;
+    }
+
+    let parts = version.split('-');
+    let baseParts = parts[0].split('.');
+    let suffix = parts.length > 1 ? parts.slice(1).join('-') : null;
+
+    if (type === 'Major' && baseParts[0] !== undefined) {
+        baseParts[0] = `<u>${baseParts[0]}</u>`;
+    } else if (type === 'Minor' && baseParts[1] !== undefined) {
+        baseParts[1] = `<u>${baseParts[1]}</u>`;
+    } else if (type === 'Patch' && baseParts[2] !== undefined) {
+        baseParts[2] = `<u>${baseParts[2]}</u>`;
+    } else if (type === 'Build' && suffix !== null) {
+        suffix = `<u>${suffix}</u>`;
+    }
+
+    let result = baseParts.join('.');
+    if (suffix !== null) {
+        result += '-' + suffix;
+    }
+    return result;
+}
+
 $(function() {
     // Native titles don't show on tap on mobile, so tooltips are shown/hidden
     // via a tap-toggled class instead (hover still works on desktop via CSS).
@@ -117,8 +145,8 @@ $(function() {
 
                 html += `<tr>
                     <td class="has-tooltip" data-tooltip="${app.image}"><strong>${app.name}</strong></td>
-                    <td>${app.current_version}</td>
-                    <td>${app.newest_version}</td>
+                    <td>${formatVersionDisplay(app.current_version, app.update_type)}</td>
+                    <td>${formatVersionDisplay(app.newest_version, app.update_type)}</td>
                     ${updateTypeCell}
                     <td>${releaseLink}</td>
                 </tr>`;
