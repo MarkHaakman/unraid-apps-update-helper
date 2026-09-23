@@ -8,7 +8,27 @@ Title="App Update Helper"
     .status-minor { color: #ffb84d; font-weight: bold; }
     .status-patch { color: #4caf50; font-weight: bold; }
     .status-build { color: #00bcd4; }
-    .update-cell-tooltip { cursor: help; }
+    .has-tooltip { position: relative; cursor: help; }
+    .has-tooltip::after {
+        content: attr(data-tooltip);
+        display: none;
+        position: absolute;
+        left: 0;
+        bottom: 100%;
+        margin-bottom: 6px;
+        background: #222;
+        color: #fff;
+        padding: 4px 8px;
+        border-radius: 4px;
+        font-size: 12px;
+        font-weight: normal;
+        white-space: pre-line;
+        z-index: 10;
+    }
+    .has-tooltip:hover::after,
+    .has-tooltip.tooltip-active::after {
+        display: block;
+    }
     .plugin-spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid #ccc; border-radius: 50%; border-top-color: #333; animation: spin 1s linear infinite; }
     @keyframes spin { to { transform: rotate(360deg); } }
 </style>
@@ -66,6 +86,20 @@ function getVersionTooltip(current, newest, type) {
 }
 
 $(function() {
+    // Native titles don't show on tap on mobile, so tooltips are shown/hidden
+    // via a tap-toggled class instead (hover still works on desktop via CSS).
+    $(document).on('click', '.has-tooltip', function(e) {
+        e.stopPropagation();
+        let wasActive = $(this).hasClass('tooltip-active');
+        $('.has-tooltip').removeClass('tooltip-active');
+        if (!wasActive) {
+            $(this).addClass('tooltip-active');
+        }
+    });
+    $(document).on('click', function() {
+        $('.has-tooltip').removeClass('tooltip-active');
+    });
+
     $.getJSON("/plugins/app-update-helper/api.php", function(data) {
         let html = "";
         if(!data || data.length === 0) {
@@ -77,12 +111,12 @@ $(function() {
                 let tooltipText = getVersionTooltip(app.current_version, app.newest_version, app.update_type);
                 
                 let updateTypeText = app.update_type || 'Up to date';
-                let updateTypeCell = tooltipText 
-                    ? `<td class="${statusClass} update-cell-tooltip" title="${tooltipText}">${updateTypeText}</td>` 
+                let updateTypeCell = tooltipText
+                    ? `<td class="${statusClass} has-tooltip" data-tooltip="${tooltipText}">${updateTypeText}</td>`
                     : `<td class="${statusClass}">${updateTypeText}</td>`;
-                
+
                 html += `<tr>
-                    <td title="${app.image}"><strong>${app.name}</strong></td>
+                    <td class="has-tooltip" data-tooltip="${app.image}"><strong>${app.name}</strong></td>
                     <td>${app.current_version}</td>
                     <td>${app.newest_version}</td>
                     ${updateTypeCell}
