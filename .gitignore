@@ -5,3 +5,4 @@ vendor
 unraid-plugin-customizer
 /.idea/
 /unraid-plugin-development-guide
+.claude/settings.local.json
