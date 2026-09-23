@@ -35,7 +35,7 @@ function parseDockerImage($imageName) {
     return [$registry, $repository, $tag];
 }
 
-function fetchRemoteLabels($registry, $repository, $tag) {
+function fetchRemoteImageInfo($registry, $repository, $tag) {
     $token = "";
     
     // 1. Try to get auth realm from headers
@@ -76,16 +76,16 @@ function fetchRemoteLabels($registry, $repository, $tag) {
     ];
     curl_setopt_array($chMan, [CURLOPT_RETURNTRANSFER => true, CURLOPT_HTTPHEADER => $headers, CURLOPT_TIMEOUT => 10]);
     $manResponse = curl_exec($chMan);
-    
+
     if ($manResponse === false) {
         curl_close($chMan);
-        return [];
+        return ['labels' => [], 'created' => ''];
     }
-    
+
     $manifest = json_decode($manResponse, true);
     curl_close($chMan);
 
-    if (!$manifest) return [];
+    if (!$manifest) return ['labels' => [], 'created' => ''];
 
     $configDigest = '';
 
@@ -109,7 +109,7 @@ function fetchRemoteLabels($registry, $repository, $tag) {
         $configDigest = $manifest['config']['digest'] ?? '';
     }
 
-    if (!$configDigest) return [];
+    if (!$configDigest) return ['labels' => [], 'created' => ''];
 
     // 4. Fetch Config Blob
     $chBlob = curl_init("https://$registry/v2/$repository/blobs/$configDigest");
@@ -122,10 +122,10 @@ function fetchRemoteLabels($registry, $repository, $tag) {
     ]);
     
     $response = curl_exec($chBlob);
-    
+
     if ($response === false) {
         curl_close($chBlob);
-        return [];
+        return ['labels' => [], 'created' => ''];
     }
     
     $httpCode = curl_getinfo($chBlob, CURLINFO_HTTP_CODE);
@@ -152,7 +152,10 @@ function fetchRemoteLabels($registry, $repository, $tag) {
     }
 
     $configData = json_decode($body, true) ?: [];
-    return $configData['config']['Labels'] ?? [];
+    return [
+        'labels'  => $configData['config']['Labels'] ?? [],
+        'created' => $configData['created'] ?? '',
+    ];
 }
 
 function extractVersionFromLabels($labels) {
@@ -166,6 +169,18 @@ function extractVersionFromLabels($labels) {
         return $matches[1];
     }
     return ltrim($version, 'v'); 
+}
+
+function formatDaysAgo($createdDate) {
+    if (empty($createdDate)) return "";
+
+    $createdTs = strtotime($createdDate);
+    if ($createdTs === false) return "";
+
+    $days = (int)floor(time() / 86400) - (int)floor($createdTs / 86400);
+    if ($days <= 0) return "Today";
+    if ($days === 1) return "1 day ago";
+    return "{$days} days ago";
 }
 
 function compareVersions($local, $remote) {
@@ -212,8 +227,8 @@ function compareVersions($local, $remote) {
 
 // --- MAIN EXECUTION ---
 
-// FIX: Bump cache version to v4 to clear previous empty tokens
-$cache_file = '/tmp/docker_versions_cache_v4.json';
+// FIX: Bump cache version to v5 to add the "created" date alongside labels
+$cache_file = '/tmp/docker_versions_cache_v5.json';
 $cache = [];
 if (file_exists($cache_file) && (time() - filemtime($cache_file)) < 3600) {
     $cache = json_decode(file_get_contents($cache_file), true) ?: [];
@@ -256,19 +271,21 @@ foreach ($containers as $c) {
     }
 
     $cache_key = "$registry/$repository:$tag";
-    
+
     if (isset($cache[$cache_key])) {
-        $remoteLabels = $cache[$cache_key];
+        $remoteInfo = $cache[$cache_key];
     } else {
-        $remoteLabels = fetchRemoteLabels($registry, $repository, $tag);
-        if (!empty($remoteLabels)) {
-            $cache[$cache_key] = $remoteLabels;
+        $remoteInfo = fetchRemoteImageInfo($registry, $repository, $tag);
+        if (!empty($remoteInfo['labels'])) {
+            $cache[$cache_key] = $remoteInfo;
             $cache_updated = true;
         }
     }
 
+    $remoteLabels = $remoteInfo['labels'] ?? [];
     $remote_version = empty($remoteLabels) ? "Unknown" : extractVersionFromLabels($remoteLabels);
     $update_type = compareVersions($local_version, $remote_version);
+    $released = formatDaysAgo($remoteInfo['created'] ?? '');
 
     $results[] = [
         'name' => $name,
@@ -276,7 +293,8 @@ foreach ($containers as $c) {
         'current_version' => $local_version,
         'newest_version' => $remote_version,
         'update_type' => $update_type,
-        'release_notes' => $release_notes
+        'release_notes' => $release_notes,
+        'released' => $released
     ];
 }
 

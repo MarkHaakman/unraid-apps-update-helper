@@ -44,12 +44,13 @@ Title="App Update Helper"
             <th>Current Version</th>
             <th>Newest Version</th>
             <th class="has-tooltip" data-tooltip="Major: breaking or major release&#10;Minor: new features, backwards compatible&#10;Patch: bug fixes only&#10;Build: same version, new build/tag&#10;Update Available: an update exists but versions couldn't be compared">Update Type</th>
+            <th>Released</th>
             <th>Release Notes</th>
         </tr>
     </thead>
     <tbody id="app-versions-body">
         <tr>
-            <td colspan="5" style="text-align:center;"><div class="plugin-spinner"></div> Fetching versions... this may take a moment.</td>
+            <td colspan="6" style="text-align:center;"><div class="plugin-spinner"></div> Fetching versions... this may take a moment.</td>
         </tr>
     </tbody>
 </table>
@@ -131,7 +132,7 @@ $(function() {
     $.getJSON("/plugins/app-update-helper/api.php", function(data) {
         let html = "";
         if(!data || data.length === 0) {
-            html = "<tr><td colspan='5' style='text-align:center;'>No containers found.</td></tr>";
+            html = "<tr><td colspan='6' style='text-align:center;'>No containers found.</td></tr>";
         } else {
             data.forEach(function(app) {
                 let statusClass = app.update_type ? "status-" + app.update_type.toLowerCase() : "";
@@ -148,6 +149,7 @@ $(function() {
                     <td>${formatVersionDisplay(app.current_version, app.update_type)}</td>
                     <td>${formatVersionDisplay(app.newest_version, app.update_type)}</td>
                     ${updateTypeCell}
+                    <td>${app.released || ''}</td>
                     <td>${releaseLink}</td>
                 </tr>`;
             });
@@ -155,7 +157,7 @@ $(function() {
         $("#app-versions-body").html(html);
     }).fail(function(jqXHR, textStatus, errorThrown) {
         console.error("Fetch error: ", textStatus, errorThrown);
-        $("#app-versions-body").html("<tr><td colspan='5' style='text-align:center; color:red;'>Failed to fetch version data. Check console for details.</td></tr>");
+        $("#app-versions-body").html("<tr><td colspan='6' style='text-align:center; color:red;'>Failed to fetch version data. Check console for details.</td></tr>");
     });
 });
 </script>
