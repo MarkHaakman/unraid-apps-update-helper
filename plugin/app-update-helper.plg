@@ -1,0 +1,68 @@
+<?xml version='1.0' standalone='yes'?>
+<!DOCTYPE PLUGIN>
+
+<PLUGIN 
+  name="app-update-helper"
+  author="Mark Haakman"
+  version="0.1.0"
+  
+  pluginURL="https://raw.githubusercontent.com/MarkHaakman/unraid-apps-update-helper/main/plugin/app-update-helper.plg"
+  support="https://github.com/MarkHaakman/unraid-apps-update-helper"
+  min="7.0.0"
+  
+  icon="arrow-circle-o-up"
+>
+
+<CHANGES>
+<![CDATA[
+
+### 0.1.0
+
+**Full Changelog**: https://github.com/MarkHaakman/unraid-apps-update-helper/commits/0.1.0
+
+
+For older releases, see https://github.com/MarkHaakman/unraid-apps-update-helper/releases
+]]>
+</CHANGES>
+
+<FILE Name="/boot/config/plugins/app-update-helper/unraid-apps-update-helper-0.1.0-noarch-1.txz">
+<URL>https://github.com/MarkHaakman/unraid-apps-update-helper/releases/download/0.1.0/unraid-apps-update-helper-0.1.0-noarch-1.txz</URL>
+<SHA256>80469e2361e37799dc298cd2213e3e6382fce1070576e64102213acde6d0cd57</SHA256>
+</FILE>
+
+<!--
+The 'install' script.
+-->
+<FILE Run="/bin/bash">
+<INLINE>
+<![CDATA[
+upgradepkg --install-new /boot/config/plugins/app-update-helper/unraid-apps-update-helper-0.1.0-noarch-1.txz
+
+# cleanup old versions
+rm -f $(ls /boot/config/plugins/app-update-helper/unraid-apps-update-helper-*.txz 2>/dev/null | grep -v '0.1.0')
+
+echo ""
+echo "----------------------------------------------------"
+echo " app-update-helper has been installed."
+echo " Version: 0.1.0"
+echo "----------------------------------------------------"
+echo ""
+]]>
+</INLINE>
+</FILE>
+
+<!--
+The 'remove' script.
+-->
+<FILE Run="/bin/bash" Method="remove">
+<INLINE>
+<![CDATA[
+removepkg unraid-apps-update-helper
+
+rm -rf /usr/local/emhttp/plugins/app-update-helper
+rm -rf /boot/config/plugins/app-update-helper
+]]>
+</INLINE>
+</FILE>
+
+</PLUGIN>
