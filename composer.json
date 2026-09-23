@@ -2,5 +2,9 @@
     "require-dev": {
         "phpstan/phpstan": "^2.1",
         "friendsofphp/php-cs-fixer": "^3.64"
+    },
+    "scripts": {
+        "post-install-cmd": "git config core.hooksPath .githooks",
+        "post-update-cmd": "git config core.hooksPath .githooks"
     }
 }
