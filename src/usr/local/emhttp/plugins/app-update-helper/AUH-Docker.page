@@ -43,7 +43,7 @@ Title="App Update Helper"
             <th>Container Name</th>
             <th>Current Version</th>
             <th>Newest Version</th>
-            <th>Update Type</th>
+            <th class="has-tooltip" data-tooltip="Major: breaking or major release&#10;Minor: new features, backwards compatible&#10;Patch: bug fixes only&#10;Build: same version, new build/tag&#10;Update Available: an update exists but versions couldn't be compared">Update Type</th>
             <th>Release Notes</th>
         </tr>
     </thead>
