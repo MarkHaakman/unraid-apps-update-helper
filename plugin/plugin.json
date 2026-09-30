@@ -4,6 +4,5 @@
     "author": "Mark Haakman",
     "min": "7.0.0",
     "icon": "arrow-circle-o-up",
-    "launch": "Settings/AUH-Settings",
-    "support": "https://github.com/MarkHaakman/unraid-apps-update-helper"
+    "launch": "Settings/AUH-Settings"
 }

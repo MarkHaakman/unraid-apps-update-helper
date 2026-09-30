@@ -1,5 +1,8 @@
-**Apps Update Helper**
+**App Update Helper**
 
-Plugin for more detailed information about app (docker container) updates.
+Shows detailed version information for your Docker containers and lets you update them, with an optional appdata backup,
+straight from the Docker tab.
 
-Update containers straight from the version table, optionally backing up their appdata first (configure the backup destination under Settings > App Update Helper).
+A table compares each container's installed version with the newest one in its registry and classifies the update as
+Major, Minor, Patch or Build. When an update is available, use Update to install it right away, or Backup & Update to
+first stop the container and archive its appdata. The backup destination is configured under Settings > App Update Helper.

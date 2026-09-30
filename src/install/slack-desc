@@ -1,9 +1,9 @@
                          |-----handy-ruler------------------------------------------------------|
 unraid-apps-update-helper: unraid-apps-update-helper
 unraid-apps-update-helper:
-unraid-apps-update-helper: Unraid plugin for more detailed information
-unraid-apps-update-helper: about app (docker container) updates.
-unraid-apps-update-helper:
+unraid-apps-update-helper: Unraid plugin showing detailed version information for your Docker
+unraid-apps-update-helper: containers and lets you update them, with an optional appdata backup,
+unraid-apps-update-helper: straight from the Docker tab.
 unraid-apps-update-helper:
 unraid-apps-update-helper:
 unraid-apps-update-helper:
