@@ -22,4 +22,8 @@ parameters:
         - "#autov#"
         - "#parse_plugin_cfg#"
       identifier: function.notFound
+    - # Ignore Unraid's DockerClient class, which is only available in a live Unraid environment
+      messages:
+        - "#DockerClient#"
+      identifier: class.notFound
   reportUnmatchedIgnoredErrors: false

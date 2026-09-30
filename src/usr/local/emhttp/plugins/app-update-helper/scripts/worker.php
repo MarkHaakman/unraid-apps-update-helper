@@ -5,6 +5,7 @@
 // instance exits immediately because it can't acquire the worker lock.
 
 require_once __DIR__ . '/../include/common.php';
+require_once '/usr/local/emhttp/plugins/dynamix.docker.manager/include/DockerClient.php';
 
 const AUH_UPDATE_SCRIPT = '/usr/local/emhttp/plugins/dynamix.docker.manager/scripts/update_container';
 const AUH_NOTIFY_SCRIPT = '/usr/local/emhttp/webGui/scripts/notify';
@@ -158,7 +159,7 @@ function auhBackup(string $name, array $config, string $logFile): void
 
     if (($config['backup_stop_container'] ?? 'yes') === 'yes' && auhIsRunning($name)) {
         auhLog($logFile, "Stopping {$name} for a consistent backup...");
-        if (auhRun('docker stop -t 30 ' . escapeshellarg($name), $logFile) !== 0) {
+        if (auhDockerControl('stop', $name, $logFile) !== null) {
             throw new AuhJobFailed("Failed to stop {$name}.");
         }
     }
@@ -187,6 +188,22 @@ function auhBackup(string $name, array $config, string $logFile): void
             @unlink($old);
         }
     }
+}
+
+/**
+ * Starts or stops a container through Unraid's DockerClient (same code path as
+ * the Docker tab). Returns an error message, or null on success.
+ */
+function auhDockerControl(string $action, string $name, string $logFile): ?string
+{
+    $client = new DockerClient();
+    $result = $action === 'start' ? $client->startContainer($name) : $client->stopContainer($name);
+    if ($result === true || $result === 'Container already started') {
+        return null;
+    }
+    $error = is_string($result) ? $result : 'no response from Docker';
+    auhLog($logFile, "ERROR: docker {$action} {$name}: {$error}");
+    return $error;
 }
 
 function auhUpdate(string $name, string $logFile): void
@@ -234,10 +251,9 @@ function auhProcessJob(array $job, array $config): void
     // called, so restart one we stopped for the backup (or that a failure left down).
     if ($wasRunning && ! auhIsRunning($name) && auhInspectContainer($name) !== null) {
         auhLog($logFile, "Starting {$name}...");
-        if (auhRun('docker start ' . escapeshellarg($name), $logFile) !== 0) {
+        if (auhDockerControl('start', $name, $logFile) !== null) {
             $status  = AUH_STATUS_FAILED;
             $message = trim("{$message} Failed to restart {$name}.");
-            auhLog($logFile, "ERROR: failed to restart {$name}.");
         }
     }
 

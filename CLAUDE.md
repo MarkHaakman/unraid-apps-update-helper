@@ -42,6 +42,12 @@ There are no local build scripts in this repo — packaging (`.txz` build) and P
 
 There is no automated test suite in this repository.
 
+## Docker access conventions
+
+- Anything that **changes** Docker state (start, stop, restart, pause, remove, pull, …) goes through Unraid's `DockerClient` class (`/usr/local/emhttp/plugins/dynamix.docker.manager/include/DockerClient.php`), not the `docker` CLI — that keeps it on the same code path as the Docker tab (stop timeout setting, WireGuard routes, cache flushing). See `auhDockerControl()` in `scripts/worker.php`. Updates go through Unraid's `update_container` script.
+- **Read-only** queries (`docker inspect`, `docker ps`, …) may call the `docker` CLI directly.
+- `DockerClient` only exists on a live Unraid; `phpstan.neon` ignores its `class.notFound` error.
+
 ## Working on `api.php`
 
 - Registry auth follows the standard Docker Registry v2 Bearer token flow: probe `/v2/` for a `WWW-Authenticate` realm, fall back to `https://$registry/token` (needed for registries like GHCR that don't advertise the realm on an unauthenticated `HEAD /v2/`), then request a pull-scoped token.
