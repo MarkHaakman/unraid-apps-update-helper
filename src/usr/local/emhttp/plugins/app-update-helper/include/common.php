@@ -54,6 +54,27 @@ function auhConfigList(string $value): array
 }
 
 /**
+ * @param array<string, mixed> $labels
+ */
+function extractVersionFromLabels(array $labels): string
+{
+    $version = $labels['org.opencontainers.image.version']
+        ?? $labels['build_version']
+        ?? $labels['org.label-schema.version']
+        ?? $labels['version']
+        ?? "Unknown";
+
+    if ( ! is_string($version)) {
+        $version = "Unknown";
+    }
+
+    if (preg_match('/version:- v?([0-9a-zA-Z.-]+)/', $version, $matches)) {
+        return $matches[1];
+    }
+    return ltrim($version, 'v');
+}
+
+/**
  * Whether the configured backup destination is usable.
  *
  * @param array<string, string> $config

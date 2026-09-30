@@ -150,7 +150,10 @@ function auhBackup(string $name, array $config, string $logFile): void
     if ( ! is_dir($targetDir) && ! mkdir($targetDir, 0755, true)) {
         throw new AuhJobFailed("Cannot create {$targetDir}.");
     }
-    $archive = "{$targetDir}/{$name}_" . date('Ymd_His') . ".{$extension}";
+    $labels  = is_array($info['Config'] ?? null) && is_array($info['Config']['Labels'] ?? null) ? $info['Config']['Labels'] : [];
+    $version = trim((string)preg_replace('/[^A-Za-z0-9._+-]+/', '-', extractVersionFromLabels($labels)), '-');
+    $version = in_array($version, ['', 'Unknown'], true) ? '' : "_{$version}";
+    $archive = "{$targetDir}/{$name}{$version}_" . date('Ymd_His') . ".{$extension}";
 
     $excludes = '';
     foreach (auhConfigList($config['backup_exclusions'] ?? '') as $pattern) {
@@ -182,7 +185,8 @@ function auhBackup(string $name, array $config, string $logFile): void
     $retention = (int)($config['backup_retention'] ?? '0');
     if ($retention > 0) {
         $existing = glob("{$targetDir}/{$name}_*.tar*") ?: [];
-        rsort($existing);
+        // Newest first; by mtime because the version in the name breaks name ordering.
+        usort($existing, fn (string $a, string $b): int => (filemtime($b) ?: 0) <=> (filemtime($a) ?: 0) ?: strcmp($b, $a));
         foreach (array_slice($existing, $retention) as $old) {
             auhLog($logFile, 'Removing old backup ' . basename($old));
             @unlink($old);
