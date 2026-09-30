@@ -4,10 +4,10 @@
 <PLUGIN 
   name="app-update-helper"
   author="Mark Haakman"
-  version="0.1.0"
-  
+  version="0.2.0"
+  launch="Settings/AUH-Settings"
   pluginURL="https://raw.githubusercontent.com/MarkHaakman/unraid-apps-update-helper/main/plugin/app-update-helper.plg"
-  support="https://github.com/MarkHaakman/unraid-apps-update-helper"
+  
   min="7.0.0"
   
   icon="arrow-circle-o-up"
@@ -15,6 +15,32 @@
 
 <CHANGES>
 <![CDATA[
+
+### 0.2.0
+
+## ✨ New: update containers from the Docker tab
+
+- **Update** and **Backup & Update** buttons on every row with an available update (containers created from an Unraid Docker template).
+- A job status badge per container and a live log viewer while an update runs.
+- Jobs are queued and processed one at a time by a background worker, so several updates can be started in a row.
+- **Backup & Update** stops the container, archives its appdata bind mounts, updates it through Unraid's own `update_container`, and restarts it if it was running.
+- If a backup or update fails, the update is skipped, the container's running state is restored and an Unraid notification is raised.
+
+## ⚙️ New: settings page
+
+**Settings > User Utilities > App Update Helper** configures the backup destination, appdata roots, exclusions, compression, whether to stop the container during the backup, and how many backups to keep.
+
+## 🔧 Changes
+
+- Containers are now started and stopped through Unraid's `DockerClient`, the same code path as the Docker tab (honours Unraid's stop timeout and WireGuard routes), instead of the `docker` CLI.
+- Refreshed plugin descriptions (README, Community Applications listing, package description).
+
+## Notes
+
+- Backups stop the container using Unraid's configured Docker stop timeout.
+- The plugin only updates containers that have an Unraid template (`my-<name>.xml`); others are shown but have no update buttons.
+
+**Full Changelog**: https://github.com/MarkHaakman/unraid-apps-update-helper/compare/0.1.0...0.2.0
 
 ### 0.1.0
 
@@ -25,9 +51,9 @@ For older releases, see https://github.com/MarkHaakman/unraid-apps-update-helper
 ]]>
 </CHANGES>
 
-<FILE Name="/boot/config/plugins/app-update-helper/unraid-apps-update-helper-0.1.0-noarch-1.txz">
-<URL>https://github.com/MarkHaakman/unraid-apps-update-helper/releases/download/0.1.0/unraid-apps-update-helper-0.1.0-noarch-1.txz</URL>
-<SHA256>80469e2361e37799dc298cd2213e3e6382fce1070576e64102213acde6d0cd57</SHA256>
+<FILE Name="/boot/config/plugins/app-update-helper/unraid-apps-update-helper-0.2.0-noarch-1.txz">
+<URL>https://github.com/MarkHaakman/unraid-apps-update-helper/releases/download/0.2.0/unraid-apps-update-helper-0.2.0-noarch-1.txz</URL>
+<SHA256>ea435f6a760c49cc985b789774fb6540ac5019b31ed601db691a620850b3c29a</SHA256>
 </FILE>
 
 <!--
@@ -36,15 +62,15 @@ The 'install' script.
 <FILE Run="/bin/bash">
 <INLINE>
 <![CDATA[
-upgradepkg --install-new /boot/config/plugins/app-update-helper/unraid-apps-update-helper-0.1.0-noarch-1.txz
+upgradepkg --install-new /boot/config/plugins/app-update-helper/unraid-apps-update-helper-0.2.0-noarch-1.txz
 
 # cleanup old versions
-rm -f $(ls /boot/config/plugins/app-update-helper/unraid-apps-update-helper-*.txz 2>/dev/null | grep -v '0.1.0')
+rm -f $(ls /boot/config/plugins/app-update-helper/unraid-apps-update-helper-*.txz 2>/dev/null | grep -v '0.2.0')
 
 echo ""
 echo "----------------------------------------------------"
 echo " app-update-helper has been installed."
-echo " Version: 0.1.0"
+echo " Version: 0.2.0"
 echo "----------------------------------------------------"
 echo ""
 ]]>
@@ -61,6 +87,7 @@ removepkg unraid-apps-update-helper
 
 rm -rf /usr/local/emhttp/plugins/app-update-helper
 rm -rf /boot/config/plugins/app-update-helper
+rm -rf /tmp/app-update-helper
 ]]>
 </INLINE>
 </FILE>
