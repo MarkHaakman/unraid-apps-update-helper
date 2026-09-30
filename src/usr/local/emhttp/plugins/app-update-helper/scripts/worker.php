@@ -75,7 +75,8 @@ function auhNotifyFailure(string $subject, string $description): void
 /**
  * Host paths of the container's bind mounts that live inside an appdata root.
  * Nested paths are dropped (their parent is already archived), as is a mapping
- * of an appdata root itself (that would back up every container's data).
+ * of an appdata root itself (that would back up every container's data), and
+ * any path with "." or ".." segments (it could point outside the root).
  * With $existingOnly false, sources missing on disk are kept (for a restore).
  *
  * @param array<mixed> $info    docker inspect output
@@ -92,7 +93,7 @@ function auhAppdataVolumes(array $info, array $roots, bool $existingOnly = true)
             continue;
         }
         $source = rtrim($mount['Source'], '/');
-        if ($source === '' || ($existingOnly && ! file_exists($source))) {
+        if ( ! auhIsPlainPath($source) || ($existingOnly && ! file_exists($source))) {
             continue;
         }
         foreach ($roots as $root) {
@@ -119,6 +120,44 @@ function auhAppdataVolumes(array $info, array $roots, bool $existingOnly = true)
         }
     }
     return $result;
+}
+
+/**
+ * Whether $path is absolute and has no empty, "." or ".." segments.
+ */
+function auhIsPlainPath(string $path): bool
+{
+    if ( ! str_starts_with($path, '/') || $path === '/') {
+        return false;
+    }
+    foreach (explode('/', substr($path, 1)) as $segment) {
+        if ($segment === '' || $segment === '.' || $segment === '..') {
+            return false;
+        }
+    }
+    return true;
+}
+
+/**
+ * Whether a restore may delete $path: a plain path inside a share or pool
+ * folder under /mnt (/mnt/<pool>/<share>/<folder>), so a whole disk, pool or
+ * share is never removed.
+ */
+function auhIsRemovablePath(string $path): bool
+{
+    return auhIsPlainPath($path) && str_starts_with($path, '/mnt/') && substr_count($path, '/') >= 4;
+}
+
+/**
+ * Deletes a folder a restore extracted, if auhIsRemovablePath() allows it.
+ */
+function auhRemoveTree(string $path, string $logFile): bool
+{
+    if ( ! auhIsRemovablePath($path)) {
+        auhLog($logFile, "ERROR: refusing to delete {$path}: not a folder inside an appdata root under /mnt.");
+        return false;
+    }
+    return auhRun('rm -rf ' . escapeshellarg($path), $logFile) === 0;
 }
 
 /**
@@ -319,19 +358,27 @@ function auhArchiveContains(string $archive, string $flags, array $paths): array
 
 /**
  * Puts appdata folders moved aside by a restore back in place, and removes
- * folders the restore created where none existed before.
+ * folders the restore created where none existed before. Returns a sentence
+ * for the job's error message saying whether that worked.
  *
  * @param array<string, string> $moved   original path => where it was moved to
  * @param list<string>          $created
  */
-function auhUndoMoves(array $moved, array $created, string $logFile): void
+function auhUndoMoves(array $moved, array $created, string $logFile): string
 {
+    $failed = [];
     foreach ($created as $path) {
-        auhRun('rm -rf ' . escapeshellarg($path), $logFile);
+        if ( ! auhRemoveTree($path, $logFile)) {
+            $failed[] = "{$path} still holds the restored files";
+        }
     }
     foreach ($moved as $from => $to) {
-        auhRun('rm -rf ' . escapeshellarg($from) . ' && mv ' . escapeshellarg($to) . ' ' . escapeshellarg($from), $logFile);
+        if ( ! auhRemoveTree($from, $logFile) || auhRun('mv ' . escapeshellarg($to) . ' ' . escapeshellarg($from), $logFile) !== 0) {
+            auhLog($logFile, "ERROR: could not put {$from} back; the previous appdata is still at {$to}.");
+            $failed[] = "the previous {$from} is still at {$to}";
+        }
     }
+    return $failed === [] ? 'Previous appdata was put back.' : 'Putting the previous appdata back failed: ' . implode('; ', $failed) . '.';
 }
 
 /**
@@ -393,6 +440,12 @@ function auhRestore(string $name, string $archiveName, array $config, string $lo
     if ($volumes === []) {
         throw new AuhJobFailed('None of the container\'s appdata volumes are in this backup (checked roots: ' . ($config['appdata_roots'] ?? '') . ').');
     }
+    // A failed restore deletes what it extracted; refuse up front what it could not roll back.
+    foreach (array_keys($volumes) as $volume) {
+        if ( ! auhIsRemovablePath($volume)) {
+            throw new AuhJobFailed("Cannot restore {$volume}: only folders inside a share under /mnt (/mnt/<pool>/<share>/<folder>) can be restored.");
+        }
+    }
 
     if ($withImage) {
         $createCommand = auhCreateCommand($name);
@@ -422,8 +475,7 @@ function auhRestore(string $name, string $archiveName, array $config, string $lo
             continue;
         }
         if ( ! rename($volume, $volume . $suffix)) {
-            auhUndoMoves($moved, [], $logFile);
-            throw new AuhJobFailed("Cannot move {$volume} aside.");
+            throw new AuhJobFailed("Cannot move {$volume} aside. " . auhUndoMoves($moved, [], $logFile));
         }
         $moved[$volume] = $volume . $suffix;
     }
@@ -432,8 +484,7 @@ function auhRestore(string $name, string $archiveName, array $config, string $lo
     auhLog($logFile, "Extracting {$archiveName}...");
     $members = implode(' ', array_map('escapeshellarg', $volumes));
     if (auhRun("tar -x {$extract} -f " . escapeshellarg($archive) . ' -C / ' . $members, $logFile) !== 0) {
-        auhUndoMoves($moved, $created, $logFile);
-        throw new AuhJobFailed('Extracting the backup failed; previous appdata was put back.');
+        throw new AuhJobFailed('Extracting the backup failed. ' . auhUndoMoves($moved, $created, $logFile));
     }
 
     if ($withImage) {
@@ -443,7 +494,7 @@ function auhRestore(string $name, string $archiveName, array $config, string $lo
             }
             auhRecreate($name, $createCommand, $logFile);
         } catch (Throwable $e) {
-            auhUndoMoves($moved, $created, $logFile);
+            $undone = auhUndoMoves($moved, $created, $logFile);
             // Point the tag back at the image the container ran and make sure it exists again.
             if ($currentImageId !== '') {
                 auhTagImage($currentImageId, $image, $logFile);
@@ -451,10 +502,10 @@ function auhRestore(string $name, string $archiveName, array $config, string $lo
             if (auhInspectContainer($name) === null) {
                 auhLog($logFile, "Recreating the original {$name}...");
                 if (auhRun($createCommand, $logFile) !== 0) {
-                    throw new AuhJobFailed($e->getMessage() . " Recreating the original {$name} also failed, so the container no longer exists; its appdata was put back. Re-add it from its template (Docker > Add Container > my-{$name}).", 0, $e);
+                    throw new AuhJobFailed($e->getMessage() . " Recreating the original {$name} also failed, so the container no longer exists. {$undone} Re-add it from its template (Docker > Add Container > my-{$name}).", 0, $e);
                 }
             }
-            throw $e;
+            throw new AuhJobFailed($e->getMessage() . ' ' . $undone, 0, $e);
         }
     }
     if ($moved !== []) {
