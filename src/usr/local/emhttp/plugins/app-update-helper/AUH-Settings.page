@@ -18,7 +18,7 @@ $auhSelect = fn (string $key, string $option): string => ($auhConfig[$key] ?? ''
 
     <dl>
         <dt>Backup destination:</dt>
-        <dd><input type="text" name="backup_destination" value="<?= $auhValue('backup_destination'); ?>" placeholder="/mnt/user/backups/app-update-helper" style="width:400px"></dd>
+        <dd><input type="text" class="ftAttach" name="backup_destination" value="<?= $auhValue('backup_destination'); ?>" placeholder="Click to select a folder" data-pickroot="/mnt/" data-pickfolders="true" style="width:400px"></dd>
     </dl>
     <blockquote class="inline_help">
         <p>Existing, writable directory. Each backup is written to <code>&lt;destination&gt;/&lt;container&gt;/&lt;container&gt;_&lt;timestamp&gt;.tar[.gz|.zst]</code>. "Backup &amp; Update" is disabled until this is set.</p>
@@ -80,3 +80,10 @@ $auhSelect = fn (string $key, string $option): string => ($auhConfig[$key] ?? ''
         </dd>
     </dl>
 </form>
+
+<script src="<?php autov('/webGui/javascript/jquery.filetree.js'); ?>" charset="utf-8"></script>
+<script>
+    $(function () {
+        $('.ftAttach').fileTreeAttach();
+    });
+</script>
