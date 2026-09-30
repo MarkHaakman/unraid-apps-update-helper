@@ -12,7 +12,7 @@ const AUH_WORKER_LOCK    = AUH_STATE_DIR . '/worker.lock';
 const AUH_LOG_DIR        = AUH_STATE_DIR . '/logs';
 const AUH_TEMPLATES_DIR  = '/boot/config/plugins/dockerMan/templates-user';
 const AUH_MAX_FINISHED   = 20;
-const AUH_MODES          = ['update', 'backup_update'];
+const AUH_MODES          = ['update', 'backup_update', 'restore'];
 const AUH_STATUS_QUEUED  = 'queued';
 const AUH_STATUS_RUNNING = 'running';
 const AUH_STATUS_DONE    = 'done';
@@ -86,6 +86,82 @@ function auhBackupDestinationValid(array $config): bool
 }
 
 /**
+ * @param array<string, string> $config
+ */
+function auhBackupDir(array $config, string $container): string
+{
+    return rtrim($config['backup_destination'] ?? '', '/') . '/' . $container;
+}
+
+/**
+ * Backups of a container, newest first (none without a valid backup destination). Each has the archive file name, its
+ * size and the image metadata from the sidecar file (empty if there is none).
+ *
+ * @param array<string, string> $config
+ * @return list<array{archive: string, size: int, mtime: int, image: string, digest: string, version: string}>
+ */
+function auhListBackups(array $config, string $container): array
+{
+    $backups = [];
+    if ( ! auhBackupDestinationValid($config)) {
+        return $backups;
+    }
+    foreach (glob(auhBackupDir($config, $container) . '/*.tar*') ?: [] as $path) {
+        if (str_ends_with($path, '.json') || ! is_file($path)) {
+            continue;
+        }
+        $meta      = auhReadBackupMeta($path);
+        $size      = filesize($path);
+        $backups[] = [
+            'archive' => basename($path),
+            'size'    => $size === false ? 0 : $size,
+            'mtime'   => filemtime($path) ?: 0,
+            'image'   => $meta['image']   ?? '',
+            'digest'  => $meta['digest']  ?? '',
+            'version' => $meta['version'] ?? '',
+        ];
+    }
+    usort($backups, fn (array $a, array $b): int => $b['mtime'] <=> $a['mtime'] ?: strcmp($b['archive'], $a['archive']));
+    return $backups;
+}
+
+/**
+ * Image metadata stored next to a backup archive by the worker.
+ *
+ * @return array<string, string>
+ */
+function auhReadBackupMeta(string $archivePath): array
+{
+    $raw     = is_file("{$archivePath}.json") ? file_get_contents("{$archivePath}.json") : false;
+    $decoded = is_string($raw) ? json_decode($raw, true) : null;
+    $meta    = [];
+    if (is_array($decoded)) {
+        foreach ($decoded as $key => $value) {
+            if (is_string($key) && is_string($value)) {
+                $meta[$key] = $value;
+            }
+        }
+    }
+    return $meta;
+}
+
+/**
+ * Full path of a backup archive of the container, or null if the name is not
+ * a plain file name of an existing archive in the container's backup folder
+ * (or no valid backup destination is configured).
+ *
+ * @param array<string, string> $config
+ */
+function auhResolveArchive(array $config, string $container, string $archive): ?string
+{
+    if ( ! auhBackupDestinationValid($config) || $archive === '' || $archive !== basename($archive) || ! str_contains($archive, '.tar') || str_ends_with($archive, '.json')) {
+        return null;
+    }
+    $path = auhBackupDir($config, $container) . '/' . $archive;
+    return is_file($path) ? $path : null;
+}
+
+/**
  * The webGUI CSRF token, needed for POST requests (validated by Unraid's local_prepend.php).
  */
 function auhCsrfToken(): string
@@ -131,6 +207,7 @@ function auhNormalizeJob(mixed $raw): ?array
         'id'        => $raw['id'],
         'container' => $raw['container'],
         'mode'      => is_string($raw['mode'] ?? null) ? $raw['mode'] : 'update',
+        'archive'   => is_string($raw['archive'] ?? null) ? $raw['archive'] : '',
         'status'    => is_string($raw['status'] ?? null) ? $raw['status'] : AUH_STATUS_FAILED,
         'created'   => is_int($raw['created'] ?? null) ? $raw['created'] : 0,
         'started'   => is_int($raw['started'] ?? null) ? $raw['started'] : 0,
@@ -204,13 +281,14 @@ function auhReadJobs(): array
 /**
  * @return Job
  */
-function auhEnqueueJob(string $container, string $mode): array
+function auhEnqueueJob(string $container, string $mode, string $archive = ''): array
 {
-    return auhWithJobs(function (array &$jobs) use ($container, $mode): array {
+    return auhWithJobs(function (array &$jobs) use ($container, $mode, $archive): array {
         $job = [
             'id'        => date('Ymd-His') . '-' . bin2hex(random_bytes(3)),
             'container' => $container,
             'mode'      => $mode,
+            'archive'   => $archive,
             'status'    => AUH_STATUS_QUEUED,
             'created'   => time(),
             'started'   => 0,

@@ -2,11 +2,11 @@
 unraid-apps-update-helper: unraid-apps-update-helper
 unraid-apps-update-helper:
 unraid-apps-update-helper: Unraid plugin showing detailed version information for your Docker
-unraid-apps-update-helper: containers and lets you update them, with an optional appdata backup,
-unraid-apps-update-helper: straight from the Docker tab.
+unraid-apps-update-helper: containers and lets you update them straight from the Docker tab,
+unraid-apps-update-helper: with an optional appdata backup that you can restore later.
 unraid-apps-update-helper:
-unraid-apps-update-helper:
-unraid-apps-update-helper:
+unraid-apps-update-helper: A restore brings back both the appdata and the image the container
+unraid-apps-update-helper: ran when the backup was made.
 unraid-apps-update-helper:
 unraid-apps-update-helper: https://github.com/MarkHaakman/unraid-apps-update-helper
 unraid-apps-update-helper:

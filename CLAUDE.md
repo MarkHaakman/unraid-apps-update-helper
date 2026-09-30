@@ -23,10 +23,20 @@ The `.references/` directory holds several independent git repositories vendored
   - `scripts/worker.php` — detached CLI worker (single instance via `worker.lock`) that drains the queue: optional backup (stop container, `tar` of bind mounts under the configured appdata roots, retention), then Unraid's `dynamix.docker.manager/scripts/update_container <name>`, then restarts the container if it was running. Failures skip the update, restore the running state, and raise an Unraid notification.
   - `README.md` — plugin description shown in the Unraid Community Applications listing.
 - `src/install/slack-desc` — Slackware package description shown during package install.
-- `plugin/plugin.json` — build-time metadata (plugin name, package name, author, min Unraid version, icon, support URL) consumed by the release tooling.
+- `plugin/plugin.json` — build-time metadata (plugin name, package name, author, min Unraid version, icon, launch page) consumed by the release tooling.
 - `plugin/plugin.j2` — Jinja2 template that renders the final `.plg` XML descriptor (install/remove scripts, download URL, SHA256) using `plugin.json` values and env vars (`PLUGIN_VERSION`, `PLUGIN_CHANGELOG`, `PLUGIN_CHECKSUM`, `GITHUB_REPOSITORY`) injected by the release action.
 - `phpstan.neon` / `.php-cs-fixer.dist.php` — static analysis and formatting config, scoped to `src/`.
 - `commitlint.config.js` — enforces Conventional Commits on every commit message.
+
+## Plugin description
+
+When a change adds or alters a big user-visible feature, update the plugin description in the same commit. It lives in three places, which must stay in sync:
+
+- `README.md` (repo root) — the intro above **Installation**.
+- `src/usr/local/emhttp/plugins/app-update-helper/README.md` — the text shown in the Community Applications listing.
+- `src/install/slack-desc` — the package description. Keep every line within the handy-ruler, and keep exactly 11 `unraid-apps-update-helper:` lines below the ruler; pad with empty ones.
+
+The first sentence sums up the main features and says the same in all three places (only its opening words differ per file). Later sentences can add detail; `slack-desc` only has room for a short version.
 
 ## Build, package, and release
 
@@ -45,6 +55,7 @@ There is no automated test suite in this repository.
 ## Docker access conventions
 
 - Anything that **changes** Docker state (start, stop, restart, pause, remove, pull, …) goes through Unraid's `DockerClient` class (`/usr/local/emhttp/plugins/dynamix.docker.manager/include/DockerClient.php`), not the `docker` CLI — that keeps it on the same code path as the Docker tab (stop timeout setting, WireGuard routes, cache flushing). See `auhDockerControl()` in `scripts/worker.php`. Updates go through Unraid's `update_container` script.
+- Operations `DockerClient` has no method for (e.g. tagging an image) go through its public `getDockerJSON($url, $method)`, a raw Docker Engine API call over the socket; on failure Docker's reply carries the reason in `message`. See `auhTagImage()`. Pulls use `DockerClient::pullImage()` (`auhPullImage()`); containers are recreated with the command from Unraid's `xmlToCommand()`, which runs Unraid's `scripts/docker create` wrapper.
 - **Read-only** queries (`docker inspect`, `docker ps`, …) may call the `docker` CLI directly.
 - `DockerClient` only exists on a live Unraid; `phpstan.neon` ignores its `class.notFound` error.
 

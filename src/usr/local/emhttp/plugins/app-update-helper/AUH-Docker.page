@@ -168,6 +168,7 @@ function latestJobFor(name) {
 }
 
 function jobLabel(job) {
+    if (job.mode === 'restore') return 'Restore';
     return job.mode === 'backup_update' ? 'Backup & update' : 'Update';
 }
 
@@ -188,6 +189,10 @@ function renderActions(name) {
         html += actionButton(name, 'update', 'Update', notManaged || busy);
         html += actionButton(name, 'backup_update', 'Backup &amp; Update',
             notManaged || busy || (AUH_BACKUP_READY ? "" : "Set a backup destination in Settings > App Update Helper first"));
+    }
+
+    if (app && app.managed) {
+        html += `<button type="button" class="auh-restore" data-container="${escapeHtml(name)}"${active || !AUH_BACKUP_READY ? ' disabled' : ''}>Restore</button>`;
     }
 
     if (job) {
@@ -319,8 +324,51 @@ function pollStatus() {
     });
 }
 
-function enqueueJob(name, mode) {
-    $.post(AUH_JOBS_URL, {csrf_token: AUH_CSRF_TOKEN, action: 'enqueue', container: name, mode: mode}, null, 'json')
+function chooseBackup(name) {
+    $.getJSON(AUH_JOBS_URL, {action: 'backups', container: name})
+        .done(function(response) {
+            let backups = response.backups || [];
+            if (backups.length === 0) {
+                swal({title: "No backups", text: `No backups found for ${escapeHtml(name)}.`, type: "info", html: true});
+                return;
+            }
+            let options = backups.map(function(b) {
+                let date = new Date(b.mtime * 1000).toLocaleString();
+                let image = b.digest ? "" : " (appdata only)";
+                let size = (b.size / 1048576).toFixed(1);
+                return `<option value="${escapeHtml(b.archive)}">${escapeHtml(date)} · ${escapeHtml(b.version || 'unknown version')} · ${size} MiB${image}</option>`;
+            }).join("");
+            // The dialog may already be closed when the callback runs, so track the choice here.
+            let selected = backups[0].archive;
+            $(document).off('change.auhrestore').on('change.auhrestore', '#auh-restore-archive', function() {
+                selected = $(this).val();
+            });
+            swal({
+                title: "Restore backup?",
+                text: `<b>${escapeHtml(name)}</b><br><br><select id="auh-restore-archive">${options}</select>` +
+                    "<br><br>Appdata is replaced by the backup (the current folders are kept with a .pre-restore suffix) " +
+                    "and the container is recreated with the image it ran back then. The update will show as available again." +
+                    "<br><br>Files that were excluded from the backup (see the exclusions in Settings) are not in the archive, " +
+                    "so they will be missing after the restore; find them in the .pre-restore folder.",
+                type: "warning",
+                html: true,
+                showCancelButton: true,
+                confirmButtonText: "Restore",
+                cancelButtonText: "Cancel"
+            }, function(confirmed) {
+                if (confirmed) {
+                    enqueueJob(name, 'restore', selected);
+                }
+                $(document).off('change.auhrestore');
+            });
+        })
+        .fail(function() {
+            swal({title: "Could not list backups", type: "error"});
+        });
+}
+
+function enqueueJob(name, mode, archive) {
+    $.post(AUH_JOBS_URL, {csrf_token: AUH_CSRF_TOKEN, action: 'enqueue', container: name, mode: mode, archive: archive || ''}, null, 'json')
         .done(function(response) {
             auhJobs.push(response.job);
             renderAllActions();
@@ -373,6 +421,11 @@ $(function() {
                 enqueueJob(name, mode);
             }
         });
+    });
+
+    $(document).on('click', '.auh-restore', function(e) {
+        e.stopPropagation();
+        chooseBackup($(this).attr('data-container'));
     });
 
     $(document).on('click', '.auh-view-log', function(e) {

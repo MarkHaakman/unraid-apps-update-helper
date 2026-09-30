@@ -1,7 +1,8 @@
 <?php
 
 // Job endpoint for the Docker tab page.
-//   POST action=enqueue container=<name> mode=update|backup_update (+ csrf_token)
+//   POST action=enqueue container=<name> mode=update|backup_update|restore [archive=<file>] (+ csrf_token)
+//   GET  action=backups container=<name>                  -> backups of the container
 //   GET  action=status [job=<id> offset=<bytes>]   -> job list and log tail
 
 require_once __DIR__ . '/include/common.php';
@@ -47,9 +48,25 @@ if ($action === 'enqueue') {
         auhRespond(['error' => 'Backup destination is not configured, missing or not writable'], 400);
     }
 
-    $job = auhEnqueueJob($container, $mode);
+    $archive = '';
+    if ($mode === 'restore') {
+        $archive = auhParam('archive');
+        if (auhResolveArchive(auhLoadConfig(), $container, $archive) === null) {
+            auhRespond(['error' => 'Unknown backup archive'], 400);
+        }
+    }
+
+    $job = auhEnqueueJob($container, $mode, $archive);
     auhStartWorker();
     auhRespond(['job' => $job]);
+}
+
+if ($action === 'backups') {
+    $container = auhParam('container');
+    if ( ! preg_match('/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/', $container)) {
+        auhRespond(['error' => 'Unknown container'], 400);
+    }
+    auhRespond(['backups' => auhListBackups(auhLoadConfig(), $container)]);
 }
 
 if ($action === 'status') {

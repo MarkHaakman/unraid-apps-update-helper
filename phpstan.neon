@@ -9,7 +9,7 @@ parameters:
     # Page files require this via its absolute Unraid path, which PHPStan can't resolve
     - src/usr/local/emhttp/plugins/app-update-helper/include/common.php
   typeAliases:
-    Job: 'array{id: string, container: string, mode: string, status: string, created: int, started: int, finished: int, message: string}'
+    Job: 'array{id: string, container: string, mode: string, archive: string, status: string, created: int, started: int, finished: int, message: string}'
   excludePaths:
     - */vendor/*
   ignoreErrors:
@@ -21,9 +21,11 @@ parameters:
       messages:
         - "#autov#"
         - "#parse_plugin_cfg#"
+        - "#xmlToCommand#"
       identifier: function.notFound
-    - # Ignore Unraid's DockerClient class, which is only available in a live Unraid environment
+    - # Ignore Unraid's DockerClient/DockerUtil classes, which are only available in a live Unraid environment
       messages:
         - "#DockerClient#"
+        - "#DockerUtil#"
       identifier: class.notFound
   reportUnmatchedIgnoredErrors: false

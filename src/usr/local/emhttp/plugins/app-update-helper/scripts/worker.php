@@ -76,12 +76,13 @@ function auhNotifyFailure(string $subject, string $description): void
  * Host paths of the container's bind mounts that live inside an appdata root.
  * Nested paths are dropped (their parent is already archived), as is a mapping
  * of an appdata root itself (that would back up every container's data).
+ * With $existingOnly false, sources missing on disk are kept (for a restore).
  *
  * @param array<mixed> $info    docker inspect output
  * @param list<string> $roots
  * @return list<string>
  */
-function auhAppdataVolumes(array $info, array $roots): array
+function auhAppdataVolumes(array $info, array $roots, bool $existingOnly = true): array
 {
     $roots  = array_map(fn (string $r): string => rtrim($r, '/'), $roots);
     $paths  = [];
@@ -91,7 +92,7 @@ function auhAppdataVolumes(array $info, array $roots): array
             continue;
         }
         $source = rtrim($mount['Source'], '/');
-        if ($source === '' || ! file_exists($source)) {
+        if ($source === '' || ($existingOnly && ! file_exists($source))) {
             continue;
         }
         foreach ($roots as $root) {
@@ -168,8 +169,10 @@ function auhBackup(string $name, array $config, string $logFile): void
     }
 
     auhLog($logFile, "Creating {$archive}...");
-    $command = "tar -c -P {$flags}{$excludes} -f " . escapeshellarg($archive) . ' '
-        . implode(' ', array_map('escapeshellarg', $volumes));
+    // Archive full paths relative to / (e.g. mnt/user/appdata/dokuwiki/), so a
+    // restore puts each folder back exactly where it came from.
+    $members  = implode(' ', array_map(fn (string $v): string => escapeshellarg(auhArchivePath($v)), $volumes));
+    $command  = "tar -c {$flags}{$excludes} -f " . escapeshellarg($archive) . ' -C / ' . $members;
     $exitCode = auhRun($command, $logFile);
 
     // GNU tar exits 1 when files changed while being read; the archive is still complete.
@@ -182,15 +185,329 @@ function auhBackup(string $name, array $config, string $logFile): void
     $size = filesize($archive);
     auhLog($logFile, 'Backup written (' . round(($size === false ? 0 : $size) / 1048576, 1) . ' MiB).');
 
+    // Remember which image this appdata belongs to; Unraid deletes it after the update.
+    $image = is_array($info['Config'] ?? null) && is_string($info['Config']['Image'] ?? null) ? $info['Config']['Image'] : '';
+    $meta  = ['container' => $name, 'image' => $image, 'digest' => auhImageDigest($info, $image), 'version' => $version === '' ? '' : substr($version, 1)];
+    file_put_contents("{$archive}.json", json_encode($meta, JSON_PRETTY_PRINT));
+    if ($meta['digest'] === '') {
+        auhLog($logFile, 'Warning: no registry digest known for the current image; a restore will only bring back appdata.');
+    }
+
     $retention = (int)($config['backup_retention'] ?? '0');
     if ($retention > 0) {
-        $existing = glob("{$targetDir}/{$name}_*.tar*") ?: [];
+        $existing = array_values(array_filter(glob("{$targetDir}/{$name}_*.tar*") ?: [], fn (string $f): bool => ! str_ends_with($f, '.json')));
         // Newest first; by mtime because the version in the name breaks name ordering.
         usort($existing, fn (string $a, string $b): int => (filemtime($b) ?: 0) <=> (filemtime($a) ?: 0) ?: strcmp($b, $a));
         foreach (array_slice($existing, $retention) as $old) {
             auhLog($logFile, 'Removing old backup ' . basename($old));
             @unlink($old);
+            @unlink("{$old}.json");
         }
+    }
+}
+
+/**
+ * The registry digest reference (repo@sha256:...) of the container's current
+ * image, or '' when the image has none (built locally, never pushed).
+ *
+ * @param array<mixed> $info docker inspect output
+ */
+function auhImageDigest(array $info, string $image): string
+{
+    $imageId = is_string($info['Image'] ?? null) ? $info['Image'] : '';
+    if ($imageId === '') {
+        return '';
+    }
+    $json    = shell_exec('docker image inspect --format ' . escapeshellarg('{{json .RepoDigests}}') . ' ' . escapeshellarg($imageId) . ' 2>/dev/null');
+    $digests = is_string($json) ? json_decode(trim($json), true) : null;
+    if ( ! is_array($digests)) {
+        return '';
+    }
+    $repo  = preg_replace('/(:[^\/:]+)?$/', '', $image);
+    $first = '';
+    foreach ($digests as $digest) {
+        if ( ! is_string($digest)) {
+            continue;
+        }
+        $first = $first === '' ? $digest : $first;
+        if (str_starts_with($digest, $repo . '@')) {
+            return $digest;
+        }
+    }
+    return $first;
+}
+
+/**
+ * Local image ID a reference (name:tag, repo@digest or ID) resolves to, or ''.
+ */
+function auhImageId(string $ref): string
+{
+    $id = shell_exec('docker image inspect --format ' . escapeshellarg('{{.Id}}') . ' ' . escapeshellarg($ref) . ' 2>/dev/null');
+    return is_string($id) ? trim($id) : '';
+}
+
+/**
+ * Pulls an image through Unraid's DockerClient, logging its status and errors.
+ * Returns the pulled image's ID, or '' when it isn't available afterwards.
+ */
+function auhPullImage(string $ref, string $logFile): string
+{
+    $client = new DockerClient();
+    $client->pullImage($ref, function ($line) use ($logFile): void {
+        $data = is_string($line) ? json_decode($line, true) : null;
+        if ( ! is_array($data)) {
+            return;
+        }
+        if (is_string($data['error'] ?? null)) {
+            auhLog($logFile, "ERROR: {$data['error']}", false);
+        } elseif (is_string($data['status'] ?? null) && preg_match('/^(Digest|Status):/', $data['status']) === 1) {
+            file_put_contents($logFile, "    {$data['status']}\n", FILE_APPEND);
+        }
+    });
+    return auhImageId($ref);
+}
+
+/**
+ * Points $image (repo[:tag]) at the given image ID through the Docker Engine
+ * API via Unraid's DockerClient (it has no tag method of its own).
+ */
+function auhTagImage(string $imageId, string $image, string $logFile): bool
+{
+    [$repo, $tag] = preg_match('/^(.+):([^\/:]+)$/', $image, $m) === 1 ? [$m[1], $m[2]] : [$image, 'latest'];
+    $client       = new DockerClient();
+    $response     = $client->getDockerJSON('/images/' . rawurlencode($imageId) . '/tag?' . http_build_query(['repo' => $repo, 'tag' => $tag]), 'POST');
+    if (auhImageId($image) === $imageId) {
+        return true;
+    }
+    // Docker answers a failed request with {"message": "..."}.
+    $reason = is_array($response) && is_string($response['message'] ?? null) ? $response['message'] : 'no response from Docker';
+    auhLog($logFile, "ERROR: docker tag {$imageId} {$image}: {$reason}");
+    return false;
+}
+
+/**
+ * The name a folder has inside a backup archive: its full path without the leading slash.
+ */
+function auhArchivePath(string $path): string
+{
+    return ltrim($path, '/');
+}
+
+/**
+ * Which of the given archive paths the archive holds as an entry.
+ *
+ * @param list<string> $paths
+ * @return list<string>
+ */
+function auhArchiveContains(string $archive, string $flags, array $paths): array
+{
+    $wanted = array_fill_keys($paths, true);
+    $found  = [];
+    $list   = popen("tar -t {$flags} --quoting-style=literal -f " . escapeshellarg($archive) . ' 2>/dev/null', 'r');
+    if ($list === false) {
+        return [];
+    }
+    while (count($found) < count($wanted) && ($line = fgets($list)) !== false) {
+        $entry = rtrim($line, "/\n");
+        if (isset($wanted[$entry])) {
+            $found[$entry] = true;
+        }
+    }
+    pclose($list);
+    return array_values(array_filter($paths, fn (string $p): bool => isset($found[$p])));
+}
+
+/**
+ * Puts appdata folders moved aside by a restore back in place, and removes
+ * folders the restore created where none existed before.
+ *
+ * @param array<string, string> $moved   original path => where it was moved to
+ * @param list<string>          $created
+ */
+function auhUndoMoves(array $moved, array $created, string $logFile): void
+{
+    foreach ($created as $path) {
+        auhRun('rm -rf ' . escapeshellarg($path), $logFile);
+    }
+    foreach ($moved as $from => $to) {
+        auhRun('rm -rf ' . escapeshellarg($from) . ' && mv ' . escapeshellarg($to) . ' ' . escapeshellarg($from), $logFile);
+    }
+}
+
+/**
+ * Brings back the appdata of a backup and the image the container ran when
+ * the backup was made. Current appdata is moved aside first and put back if
+ * anything fails.
+ *
+ * @param array<string, string> $config
+ */
+function auhRestore(string $name, string $archiveName, array $config, string $logFile): void
+{
+    $archive = auhResolveArchive($config, $name, $archiveName);
+    if ($archive === null) {
+        throw new AuhJobFailed("Backup {$archiveName} not found.");
+    }
+    $meta   = auhReadBackupMeta($archive);
+    $image  = $meta['image']  ?? '';
+    $digest = $meta['digest'] ?? '';
+
+    $extract = match (true) {
+        str_ends_with($archive, '.tar.zst') => '-I ' . escapeshellarg('zstd -T0'),
+        str_ends_with($archive, '.tar.gz')  => '-z',
+        default                             => '',
+    };
+
+    $info = auhInspectContainer($name);
+    if ($info === null) {
+        throw new AuhJobFailed("Container {$name} not found.");
+    }
+    $withImage       = $image !== '' && $digest !== '';
+    $currentImageId  = is_string($info['Image'] ?? null) ? $info['Image'] : '';
+    $createCommand   = '';
+    $previousImageId = '';
+
+    // The container is recreated from its current template, so moving the tag
+    // of an image it no longer uses would not restore anything.
+    $currentImage = is_array($info['Config'] ?? null) && is_string($info['Config']['Image'] ?? null) ? $info['Config']['Image'] : '';
+    if ($withImage && $currentImage !== $image) {
+        throw new AuhJobFailed("This backup was made with image {$image}, but {$name} now uses {$currentImage}. Change the template back to {$image} to restore this backup.");
+    }
+
+    // Do everything that can fail without side effects first: pick the volumes
+    // the backup holds, build the create command and pull the old image (the
+    // tag is only moved once appdata is restored).
+    // Volumes missing on disk are included: bringing those back is the point.
+    $inArchivePath = [];
+    foreach (auhAppdataVolumes($info, auhConfigList($config['appdata_roots'] ?? ''), false) as $volume) {
+        $inArchivePath[$volume] = auhArchivePath($volume);
+    }
+    $inArchive = auhArchiveContains($archive, $extract, array_values($inArchivePath));
+    $volumes   = [];
+    foreach ($inArchivePath as $volume => $path) {
+        if (in_array($path, $inArchive, true)) {
+            $volumes[$volume] = $path;
+        } else {
+            auhLog($logFile, "Skipping {$volume}: not in this backup.");
+        }
+    }
+    if ($volumes === []) {
+        throw new AuhJobFailed('None of the container\'s appdata volumes are in this backup (checked roots: ' . ($config['appdata_roots'] ?? '') . ').');
+    }
+
+    if ($withImage) {
+        $createCommand = auhCreateCommand($name);
+        auhLog($logFile, "Pulling previous image {$digest}...");
+        $previousImageId = auhPullImage($digest, $logFile);
+        if ($previousImageId === '') {
+            throw new AuhJobFailed("Could not pull {$digest}; the registry no longer serves it.");
+        }
+    } else {
+        auhLog($logFile, 'This backup has no image information: restoring appdata only.');
+    }
+
+    if (auhIsRunning($name)) {
+        auhLog($logFile, "Stopping {$name}...");
+        if (auhDockerControl('stop', $name, $logFile) !== null) {
+            throw new AuhJobFailed("Failed to stop {$name}.");
+        }
+    }
+
+    // Move current appdata aside, extract the backup in place, undo on failure.
+    $suffix  = '.pre-restore-' . date('Ymd_His');
+    $moved   = [];
+    $created = [];
+    foreach (array_keys($volumes) as $volume) {
+        if ( ! file_exists($volume)) {
+            $created[] = $volume;
+            continue;
+        }
+        if ( ! rename($volume, $volume . $suffix)) {
+            auhUndoMoves($moved, [], $logFile);
+            throw new AuhJobFailed("Cannot move {$volume} aside.");
+        }
+        $moved[$volume] = $volume . $suffix;
+    }
+
+    // Extract only the members of the selected volumes, each at its full path.
+    auhLog($logFile, "Extracting {$archiveName}...");
+    $members = implode(' ', array_map('escapeshellarg', $volumes));
+    if (auhRun("tar -x {$extract} -f " . escapeshellarg($archive) . ' -C / ' . $members, $logFile) !== 0) {
+        auhUndoMoves($moved, $created, $logFile);
+        throw new AuhJobFailed('Extracting the backup failed; previous appdata was put back.');
+    }
+
+    if ($withImage) {
+        try {
+            if ( ! auhTagImage($previousImageId, $image, $logFile)) {
+                throw new AuhJobFailed("Could not tag {$digest} as {$image}.");
+            }
+            auhRecreate($name, $createCommand, $logFile);
+        } catch (Throwable $e) {
+            auhUndoMoves($moved, $created, $logFile);
+            // Point the tag back at the image the container ran and make sure it exists again.
+            if ($currentImageId !== '') {
+                auhTagImage($currentImageId, $image, $logFile);
+            }
+            if (auhInspectContainer($name) === null) {
+                auhLog($logFile, "Recreating the original {$name}...");
+                if (auhRun($createCommand, $logFile) !== 0) {
+                    throw new AuhJobFailed($e->getMessage() . " Recreating the original {$name} also failed, so the container no longer exists; its appdata was put back. Re-add it from its template (Docker > Add Container > my-{$name}).", 0, $e);
+                }
+            }
+            throw $e;
+        }
+    }
+    if ($moved !== []) {
+        auhLog($logFile, 'Previous appdata is kept as *' . $suffix . ' next to the restored folders; remove it when you are satisfied.');
+    }
+}
+
+/**
+ * The `docker create` command Unraid builds from the container's template.
+ * Built before a restore changes anything, so a failure here costs nothing.
+ */
+function auhCreateCommand(string $name): string
+{
+    // xmlToCommand() lives in dockerMan's Helpers.php, which DockerClient.php may not pull in.
+    $helpers = '/usr/local/emhttp/plugins/dynamix.docker.manager/include/Helpers.php';
+    if ( ! function_exists('xmlToCommand') && is_file($helpers)) {
+        require_once $helpers;
+    }
+    if ( ! function_exists('xmlToCommand')) {
+        throw new AuhJobFailed('Unraid\'s xmlToCommand() is not available; cannot recreate the container.');
+    }
+
+    $template = AUH_TEMPLATES_DIR . "/my-{$name}.xml";
+    // Globals xmlToCommand()/xmlToVar() read: the docker script path, TZ and
+    // HOST_HOSTNAME, the network drivers and the known networks.
+    global $docroot, $var, $driver, $custom, $subnet;
+    $docroot = '/usr/local/emhttp';
+    $var     = @parse_ini_file('/var/local/emhttp/var.ini') ?: [];
+    $driver  = DockerUtil::driver();
+    $custom  = DockerUtil::custom();
+    $subnet  = DockerUtil::network($custom);
+    $opts    = xmlToCommand($template);
+    $cmd     = is_array($opts) && is_string($opts[0] ?? null) ? $opts[0] : '';
+    if ($cmd === '') {
+        throw new AuhJobFailed("Could not build the docker command from {$template}.");
+    }
+    return $cmd;
+}
+
+/**
+ * Replaces the container by a new one made with $createCommand, without
+ * pulling, so it uses the image currently tagged locally (like update_container, minus the pull).
+ */
+function auhRecreate(string $name, string $createCommand, string $logFile): void
+{
+    auhLog($logFile, "Recreating {$name} from its template...");
+    $client = new DockerClient();
+    $result = $client->removeContainer($name);
+    if ($result !== true) {
+        throw new AuhJobFailed("Failed to remove {$name}: " . (is_string($result) ? $result : 'no response from Docker'));
+    }
+    if (auhRun($createCommand, $logFile) !== 0) {
+        throw new AuhJobFailed("docker create for {$name} failed.");
     }
 }
 
@@ -230,7 +547,11 @@ function auhProcessJob(array $job, array $config): void
 {
     $name    = $job['container'];
     $logFile = auhJobLogPath($job['id']);
-    $label   = $job['mode'] === 'backup_update' ? 'Backup & update' : 'Update';
+    $label   = match ($job['mode']) {
+        'backup_update' => 'Backup & update',
+        'restore'       => 'Restore',
+        default         => 'Update',
+    };
 
     auhLog($logFile, "{$label} of {$name} started.");
     $wasRunning = auhIsRunning($name);
@@ -239,10 +560,14 @@ function auhProcessJob(array $job, array $config): void
         if ( ! auhHasUserTemplate($name)) {
             throw new AuhJobFailed("{$name} has no Unraid Docker template (my-{$name}.xml); cannot update.");
         }
-        if ($job['mode'] === 'backup_update') {
-            auhBackup($name, $config, $logFile);
+        if ($job['mode'] === 'restore') {
+            auhRestore($name, $job['archive'], $config, $logFile);
+        } else {
+            if ($job['mode'] === 'backup_update') {
+                auhBackup($name, $config, $logFile);
+            }
+            auhUpdate($name, $logFile);
         }
-        auhUpdate($name, $logFile);
         $status  = AUH_STATUS_DONE;
         $message = '';
     } catch (Throwable $e) {
