@@ -91,7 +91,8 @@ let auhJobs = [];          // job list from jobs.php, oldest first
 let auhFinishedIds = null; // ids of finished jobs seen in the previous poll
 let auhPollTimer = null;
 let auhPollXhr = null;     // in-flight status request; only one may run at a time
-let auhLogJob = null;     // job whose log is shown in the modal
+const AUH_DONE_VISIBLE_SECONDS = 3600;
+let auhLogJob = null;    // job whose log is shown in the modal
 let auhLogOffset = 0;
 
 function escapeHtml(value) {
@@ -202,7 +203,10 @@ function renderActions(name) {
         } else if (job.status === 'running') {
             html += `<span class="auh-job"><span class="plugin-spinner"></span> Running · ${logLink}</span>`;
         } else if (job.status === 'done') {
-            html += `<span class="auh-job auh-job-done">&#10003; ${jobLabel(job)} done · ${logLink}</span>`;
+            // Successful jobs are only shown for an hour after they finished; failures stay.
+            if (Date.now() / 1000 - job.finished < AUH_DONE_VISIBLE_SECONDS) {
+                html += `<span class="auh-job auh-job-done">&#10003; ${jobLabel(job)} done · ${logLink}</span>`;
+            }
         } else {
             html += `<span class="auh-job auh-job-failed has-tooltip" data-tooltip="${escapeHtml(job.message)}">&#10007; ${jobLabel(job)} failed · ${logLink}</span>`;
         }
