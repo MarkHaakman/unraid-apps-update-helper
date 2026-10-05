@@ -234,7 +234,7 @@ function loadTable() {
                 let sameVersion = app.current_version === app.newest_version && app.current_version !== "Unknown";
                 let tooltipText =getVersionTooltip(app.current_version, app.newest_version, app.update_type);
 
-                let updateTypeText = app.update_type || 'Up to date';
+                let updateTypeText = app.update_type || '-';
                 let updateTypeCell = tooltipText
                     ? `<td class="${statusClass} has-tooltip" data-tooltip="${escapeHtml(tooltipText)}">${updateTypeText}</td>`
                     : `<td class="${statusClass}">${updateTypeText}</td>`;
