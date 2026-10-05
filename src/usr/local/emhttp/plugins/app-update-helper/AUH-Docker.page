@@ -231,7 +231,8 @@ function loadTable() {
                 auhApps[app.name] = app;
                 let statusClass = app.update_type ? "status-" + app.update_type.toLowerCase() : "";
                 let releaseLink = app.release_notes ? `<a href="${escapeHtml(app.release_notes)}" target="_blank">View Notes</a>` : "N/A";
-                let tooltipText = getVersionTooltip(app.current_version, app.newest_version, app.update_type);
+                let sameVersion = app.current_version === app.newest_version && app.current_version !== "Unknown";
+                let tooltipText =getVersionTooltip(app.current_version, app.newest_version, app.update_type);
 
                 let updateTypeText = app.update_type || 'Up to date';
                 let updateTypeCell = tooltipText
@@ -241,7 +242,7 @@ function loadTable() {
                 html += `<tr>
                     <td class="has-tooltip" data-tooltip="${escapeHtml(app.image)}"><strong>${escapeHtml(app.name)}</strong></td>
                     <td>${formatVersionDisplay(escapeHtml(app.current_version), app.update_type)}</td>
-                    <td>${formatVersionDisplay(escapeHtml(app.newest_version), app.update_type)}</td>
+                    <td>${sameVersion ? '&lt;same&gt;' : formatVersionDisplay(escapeHtml(app.newest_version), app.update_type)}</td>
                     ${updateTypeCell}
                     <td>${app.released || ''}</td>
                     <td>${releaseLink}</td>
