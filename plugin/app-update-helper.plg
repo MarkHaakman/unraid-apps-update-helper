@@ -4,7 +4,7 @@
 <PLUGIN 
   name="app-update-helper"
   author="Mark Haakman"
-  version="0.3.0"
+  version="0.4.0"
   launch="Settings/AUH-Settings"
   pluginURL="https://raw.githubusercontent.com/MarkHaakman/unraid-apps-update-helper/main/plugin/app-update-helper.plg"
   
@@ -15,6 +15,25 @@
 
 <CHANGES>
 <![CDATA[
+
+### 0.4.0
+
+## ⚡ Faster version checks
+
+- The Docker tab now looks up the newest version of all containers in parallel instead of one after another. A cold load (nothing cached) of 15 containers drops from about 20 seconds to about 2, and stays roughly the same as you add more containers.
+- Failed lookups (registry unreachable, auth or manifest error) are now cached for 10 minutes instead of being retried on every page load. Images that have no version labels are cached for the full hour.
+- Each cached image now expires on its own, an hour after it was looked up, instead of the whole cache expiring at once.
+
+## 🔧 Changes
+
+- The newest version column shows `<same>` when it matches the installed version.
+- A finished update or backup job's status disappears from the table an hour after it completed. Failed jobs stay visible.
+
+## Notes
+
+- The version cache moved to a new file (`/tmp/docker_versions_cache_v6.json`), so the first load after updating fetches everything once.
+
+**Full Changelog**: https://github.com/MarkHaakman/unraid-apps-update-helper/compare/0.3.0...0.4.0
 
 ### 0.3.0
 
@@ -64,18 +83,14 @@
 
 **Full Changelog**: https://github.com/MarkHaakman/unraid-apps-update-helper/compare/0.1.0...0.2.0
 
-### 0.1.0
-
-**Full Changelog**: https://github.com/MarkHaakman/unraid-apps-update-helper/commits/0.1.0
-
 
 For older releases, see https://github.com/MarkHaakman/unraid-apps-update-helper/releases
 ]]>
 </CHANGES>
 
-<FILE Name="/boot/config/plugins/app-update-helper/unraid-apps-update-helper-0.3.0-noarch-1.txz">
-<URL>https://github.com/MarkHaakman/unraid-apps-update-helper/releases/download/0.3.0/unraid-apps-update-helper-0.3.0-noarch-1.txz</URL>
-<SHA256>0c95d31c0a781d67c14d8955eb228c602abd4492e59ad924630f99714bc80e17</SHA256>
+<FILE Name="/boot/config/plugins/app-update-helper/unraid-apps-update-helper-0.4.0-noarch-1.txz">
+<URL>https://github.com/MarkHaakman/unraid-apps-update-helper/releases/download/0.4.0/unraid-apps-update-helper-0.4.0-noarch-1.txz</URL>
+<SHA256>6b2e2578b923e0a67336628360a7471dd8d66641505b6ff9b31649530a76ac3a</SHA256>
 </FILE>
 
 <!--
@@ -84,15 +99,15 @@ The 'install' script.
 <FILE Run="/bin/bash">
 <INLINE>
 <![CDATA[
-upgradepkg --install-new /boot/config/plugins/app-update-helper/unraid-apps-update-helper-0.3.0-noarch-1.txz
+upgradepkg --install-new /boot/config/plugins/app-update-helper/unraid-apps-update-helper-0.4.0-noarch-1.txz
 
 # cleanup old versions
-rm -f $(ls /boot/config/plugins/app-update-helper/unraid-apps-update-helper-*.txz 2>/dev/null | grep -v '0.3.0')
+rm -f $(ls /boot/config/plugins/app-update-helper/unraid-apps-update-helper-*.txz 2>/dev/null | grep -v '0.4.0')
 
 echo ""
 echo "----------------------------------------------------"
 echo " app-update-helper has been installed."
-echo " Version: 0.3.0"
+echo " Version: 0.4.0"
 echo "----------------------------------------------------"
 echo ""
 ]]>
