@@ -43,38 +43,92 @@ function parseDockerImage(string $imageName): array
 }
 
 /**
- * @return array{labels: array<string, mixed>, created: string}
+ * Runs a batch of requests concurrently on a shared multi handle (which keeps connections alive between batches).
+ *
+ * @param array<string, array<int, mixed>> $requests curl options per request
+ * @return array<string, array{body: string, code: int, headerSize: int}> keyed like $requests; body is '' on failure
  */
-function fetchRemoteImageInfo(string $registry, string $repository, string $tag): array
+function curlMultiFetch(CurlMultiHandle $mh, array $requests): array
 {
-    $token = "";
-
-    // 1. Try to get auth realm from headers
-    $ch = curl_init("https://{$registry}/v2/");
-    curl_setopt_array($ch, [CURLOPT_RETURNTRANSFER => true, CURLOPT_HEADER => true, CURLOPT_NOBODY => true, CURLOPT_TIMEOUT => 10]);
-    $response = curl_exec($ch);
-    curl_close($ch);
-
-    $realm   = "";
-    $service = "";
-    if (is_string($response) && preg_match('/www-authenticate:\s*Bearer\s+realm="([^"]+)"(?:,\s*service="([^"]+)")?/i', $response, $matches)) {
-        $realm   = $matches[1];
-        $service = $matches[2] ?? '';
+    $handles = [];
+    foreach ($requests as $key => $options) {
+        $ch = curl_init();
+        curl_setopt_array($ch, $options + [CURLOPT_RETURNTRANSFER => true, CURLOPT_CONNECTTIMEOUT => 10, CURLOPT_TIMEOUT => 30]);
+        curl_multi_add_handle($mh, $ch);
+        $handles[$key] = $ch;
     }
 
-    // FIX: Fallback directly to registry token endpoint if header realm wasn't parsed (like GHCR)
-    if (empty($realm)) {
-        $realm   = "https://{$registry}/token";
-        $service = $registry;
+    do {
+        $status = curl_multi_exec($mh, $running);
+        if ($running > 0 && curl_multi_select($mh, 1.0) === -1) {
+            usleep(10000);
+        }
+    } while ($running > 0 && $status === CURLM_OK);
+
+    $responses = [];
+    foreach ($handles as $key => $ch) {
+        $responses[$key] = [
+            'body'       => curl_multi_getcontent($ch) ?? '',
+            'code'       => curl_getinfo($ch, CURLINFO_HTTP_CODE),
+            'headerSize' => curl_getinfo($ch, CURLINFO_HEADER_SIZE),
+        ];
+        curl_multi_remove_handle($mh, $ch);
+        curl_close($ch);
     }
 
-    $authUrl = $service ? "{$realm}?service={$service}&scope=repository:{$repository}:pull" : "{$realm}?scope=repository:{$repository}:pull";
+    return $responses;
+}
 
-    $chAuth = curl_init($authUrl);
-    curl_setopt_array($chAuth, [CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 10]);
-    $authResponse = curl_exec($chAuth);
-    if (is_string($authResponse)) {
-        $authJson = json_decode($authResponse, true);
+/**
+ * Fetches the OCI labels and creation date of many remote images at once. Each step of the registry flow
+ * (auth realm, token, manifest, per-arch manifest, config blob, blob redirect) runs for all images in parallel,
+ * so the total time is a handful of round trips instead of growing with the number of images.
+ *
+ * @param array<string, array{0: string, 1: string, 2: string}> $images cache key => [registry, repository, tag]
+ * @return array<string, array{labels: array<string, mixed>, created: string}> keyed like $images
+ */
+function fetchRemoteImageInfos(array $images): array
+{
+    $results = [];
+    foreach ($images as $key => $_) {
+        $results[$key] = ['labels' => [], 'created' => ''];
+    }
+    if ($images === []) {
+        return $results;
+    }
+
+    // No per-host connection limit: queued requests would burn their timeout while waiting for a free connection
+    $mh = curl_multi_init();
+
+    // 1. Get the auth realm from the headers, once per registry
+    $probes = [];
+    foreach ($images as [$registry]) {
+        $probes[$registry] = [CURLOPT_URL => "https://{$registry}/v2/", CURLOPT_HEADER => true, CURLOPT_NOBODY => true];
+    }
+
+    $realms = [];
+    foreach (curlMultiFetch($mh, $probes) as $registry => $response) {
+        if (preg_match('/www-authenticate:\s*Bearer\s+realm="([^"]+)"(?:,\s*service="([^"]+)")?/i', $response['body'], $matches)) {
+            $realms[$registry] = [$matches[1], $matches[2] ?? ''];
+        } else {
+            // Fall back directly to the registry token endpoint if the header realm wasn't parsed (like GHCR)
+            $realms[$registry] = ["https://{$registry}/token", $registry];
+        }
+    }
+
+    // 2. Get a pull token, once per repository
+    $tokenRequests = [];
+    foreach ($images as [$registry, $repository]) {
+        [$realm, $service]                          = $realms[$registry];
+        $tokenRequests["{$registry}/{$repository}"] = [
+            CURLOPT_URL => $service ? "{$realm}?service={$service}&scope=repository:{$repository}:pull" : "{$realm}?scope=repository:{$repository}:pull",
+        ];
+    }
+
+    $tokens = [];
+    foreach (curlMultiFetch($mh, $tokenRequests) as $tokenKey => $response) {
+        $authJson = json_decode($response['body'], true);
+        $token    = '';
         if (is_array($authJson)) {
             if (is_string($authJson['token'] ?? null)) {
                 $token = $authJson['token'];
@@ -82,33 +136,48 @@ function fetchRemoteImageInfo(string $registry, string $repository, string $tag)
                 $token = $authJson['access_token'];
             }
         }
-    }
-    curl_close($chAuth);
-
-    // 2. Fetch Manifest
-    $chMan   = curl_init("https://{$registry}/v2/{$repository}/manifests/{$tag}");
-    $headers = [
-        "Authorization: Bearer {$token}",
-        "Accept: application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.index.v1+json"
-    ];
-    curl_setopt_array($chMan, [CURLOPT_RETURNTRANSFER => true, CURLOPT_HTTPHEADER => $headers, CURLOPT_TIMEOUT => 10]);
-    $manResponse = curl_exec($chMan);
-    curl_close($chMan);
-
-    if ( ! is_string($manResponse)) {
-        return ['labels' => [], 'created' => ''];
+        $tokens[$tokenKey] = $token;
     }
 
-    $manifest = json_decode($manResponse, true);
+    $manifestOptions = function (string $key, string $reference) use ($images, $tokens): array {
+        [$registry, $repository] = $images[$key];
 
-    if ( ! is_array($manifest)) {
-        return ['labels' => [], 'created' => ''];
+        return [
+            CURLOPT_URL        => "https://{$registry}/v2/{$repository}/manifests/{$reference}",
+            CURLOPT_HTTPHEADER => [
+                "Authorization: Bearer {$tokens["{$registry}/{$repository}"]}",
+                "Accept: application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.index.v1+json",
+            ],
+        ];
+    };
+
+    $configDigestOf = function (string $body): string {
+        $manifest = json_decode($body, true);
+        $config   = is_array($manifest) && is_array($manifest['config'] ?? null) ? $manifest['config'] : [];
+
+        return is_string($config['digest'] ?? null) ? $config['digest'] : '';
+    };
+
+    // 3. Fetch the manifests
+    $manifestRequests = [];
+    foreach ($images as $key => [, , $tag]) {
+        $manifestRequests[$key] = $manifestOptions($key, $tag);
     }
 
-    $configDigest = '';
+    $configDigests      = [];
+    $subManifestRequest = [];
+    foreach (curlMultiFetch($mh, $manifestRequests) as $key => $response) {
+        $manifest = json_decode($response['body'], true);
+        if ( ! is_array($manifest)) {
+            continue;
+        }
 
-    // 3. Handle Multi-Arch Manifest Lists (Find amd64 for Unraid)
-    if (isset($manifest['manifests']) && is_array($manifest['manifests'])) {
+        if ( ! isset($manifest['manifests']) || ! is_array($manifest['manifests'])) {
+            $configDigests[$key] = $configDigestOf($response['body']);
+            continue;
+        }
+
+        // Multi-arch manifest list: find amd64 for Unraid
         foreach ($manifest['manifests'] as $m) {
             if ( ! is_array($m)) {
                 continue;
@@ -116,85 +185,65 @@ function fetchRemoteImageInfo(string $registry, string $repository, string $tag)
             $platform = is_array($m['platform'] ?? null) ? $m['platform'] : [];
             if (($platform['architecture'] ?? null) === 'amd64') {
                 $digest = is_string($m['digest'] ?? null) ? $m['digest'] : '';
-                if ($digest === '') {
-                    break;
+                if ($digest !== '') {
+                    $subManifestRequest[$key] = $manifestOptions($key, $digest);
                 }
-
-                $chSub = curl_init("https://{$registry}/v2/{$repository}/manifests/" . $digest);
-                curl_setopt_array($chSub, [CURLOPT_RETURNTRANSFER => true, CURLOPT_HTTPHEADER => $headers, CURLOPT_TIMEOUT => 10]);
-                $subResponse = curl_exec($chSub);
-
-                if (is_string($subResponse)) {
-                    $subManifest = json_decode($subResponse, true);
-                    if (is_array($subManifest)) {
-                        $subConfig    = is_array($subManifest['config'] ?? null) ? $subManifest['config'] : [];
-                        $configDigest = is_string($subConfig['digest'] ?? null) ? $subConfig['digest'] : '';
-                    }
-                }
-                curl_close($chSub);
                 break;
             }
         }
-    } else {
-        $config       = is_array($manifest['config'] ?? null) ? $manifest['config'] : [];
-        $configDigest = is_string($config['digest'] ?? null) ? $config['digest'] : '';
     }
 
-    if ( ! $configDigest) {
-        return ['labels' => [], 'created' => ''];
+    // 4. Fetch the amd64 manifests of multi-arch images
+    foreach (curlMultiFetch($mh, $subManifestRequest) as $key => $response) {
+        $configDigests[$key] = $configDigestOf($response['body']);
     }
 
-    // 4. Fetch Config Blob
-    $chBlob = curl_init("https://{$registry}/v2/{$repository}/blobs/{$configDigest}");
-    curl_setopt_array($chBlob, [
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_HEADER         => true,
-        CURLOPT_HTTPHEADER     => ["Authorization: Bearer {$token}"],
-        CURLOPT_FOLLOWLOCATION => false,
-        CURLOPT_TIMEOUT        => 10
-    ]);
-
-    $response = curl_exec($chBlob);
-
-    if ( ! is_string($response)) {
-        curl_close($chBlob);
-        return ['labels' => [], 'created' => ''];
+    // 5. Fetch the config blobs
+    $blobRequests = [];
+    foreach (array_filter($configDigests) as $key => $configDigest) {
+        [$registry, $repository] = $images[$key];
+        $blobRequests[$key]      = [
+            CURLOPT_URL            => "https://{$registry}/v2/{$repository}/blobs/{$configDigest}",
+            CURLOPT_HEADER         => true,
+            CURLOPT_HTTPHEADER     => ["Authorization: Bearer {$tokens["{$registry}/{$repository}"]}"],
+            CURLOPT_FOLLOWLOCATION => false,
+        ];
     }
 
-    $httpCode   = curl_getinfo($chBlob, CURLINFO_HTTP_CODE);
-    $headerSize = curl_getinfo($chBlob, CURLINFO_HEADER_SIZE);
-    $headerStr  = substr($response, 0, $headerSize);
-    $body       = substr($response, $headerSize);
-    curl_close($chBlob);
+    $configBodies     = [];
+    $redirectRequests = [];
+    foreach (curlMultiFetch($mh, $blobRequests) as $key => $response) {
+        $headerStr          = substr($response['body'], 0, $response['headerSize']);
+        $configBodies[$key] = substr($response['body'], $response['headerSize']);
 
-    if ($httpCode >= 300 && $httpCode < 400) {
-        if (preg_match('/^Location:\s*(.+)$/mi', $headerStr, $matches)) {
-            $redirectUrl = trim($matches[1]);
-            $chRedir     = curl_init($redirectUrl);
-            curl_setopt_array($chRedir, [
-                CURLOPT_RETURNTRANSFER => true,
-                CURLOPT_FOLLOWLOCATION => true,
-                CURLOPT_TIMEOUT        => 10
-            ]);
-            $redirResponse = curl_exec($chRedir);
-            if (is_string($redirResponse)) {
-                $body = $redirResponse;
-            }
-            curl_close($chRedir);
+        if ($response['code'] >= 300 && $response['code'] < 400 && preg_match('/^Location:\s*(.+)$/mi', $headerStr, $matches)) {
+            $redirectRequests[$key] = [CURLOPT_URL => trim($matches[1]), CURLOPT_FOLLOWLOCATION => true];
         }
     }
 
-    $configData = json_decode($body, true);
-    if ( ! is_array($configData)) {
-        return ['labels' => [], 'created' => ''];
+    // 6. Follow blob redirects (usually to a CDN) without forwarding the registry token
+    foreach (curlMultiFetch($mh, $redirectRequests) as $key => $response) {
+        if ($response['body'] !== '') {
+            $configBodies[$key] = $response['body'];
+        }
     }
 
-    $configBlock = is_array($configData['config'] ?? null) ? $configData['config'] : [];
+    curl_multi_close($mh);
 
-    return [
-        'labels'  => is_array($configBlock['Labels'] ?? null) ? $configBlock['Labels'] : [],
-        'created' => is_string($configData['created'] ?? null) ? $configData['created'] : '',
-    ];
+    foreach ($configBodies as $key => $body) {
+        $configData = json_decode($body, true);
+        if ( ! is_array($configData)) {
+            continue;
+        }
+
+        $configBlock   = is_array($configData['config'] ?? null) ? $configData['config'] : [];
+        $results[$key] = [
+            'labels'  => is_array($configBlock['Labels'] ?? null) ? $configBlock['Labels'] : [],
+            'created' => is_string($configData['created'] ?? null) ? $configData['created'] : '',
+        ];
+    }
+
+    return $results;
 }
 
 function formatDaysAgo(string $createdDate): string
@@ -314,11 +363,30 @@ if ( ! is_array($containers)) {
     exit;
 }
 
-foreach ($containers as $c) {
-    if ( ! is_array($c)) {
-        continue;
-    }
+$containers = array_filter($containers, 'is_array');
 
+// Look up every image that isn't cached in one parallel batch
+$uncached = [];
+foreach ($containers as $c) {
+    $config = is_array($c['Config'] ?? null) ? $c['Config'] : [];
+    $image  = parseDockerImage(is_string($config['Image'] ?? null) ? $config['Image'] : '');
+
+    $cache_key = "{$image[0]}/{$image[1]}:{$image[2]}";
+    if ( ! is_array($cache[$cache_key] ?? null)) {
+        $uncached[$cache_key] = $image;
+    }
+}
+
+$fetched = fetchRemoteImageInfos($uncached);
+foreach ($fetched as $cache_key => $remoteInfo) {
+    // Failed lookups aren't cached, so they are retried on the next load
+    if ( ! empty($remoteInfo['labels'])) {
+        $cache[$cache_key] = $remoteInfo;
+        $cache_updated     = true;
+    }
+}
+
+foreach ($containers as $c) {
     $config      = is_array($c['Config'] ?? null) ? $c['Config'] : [];
     $name        = is_string($c['Name'] ?? null) ? ltrim($c['Name'], '/') : '';
     $image       = is_string($config['Image'] ?? null) ? $config['Image'] : '';
@@ -344,19 +412,11 @@ foreach ($containers as $c) {
 
     $cache_key = "{$registry}/{$repository}:{$tag}";
 
-    $cachedEntry = $cache[$cache_key] ?? null;
-    if (is_array($cachedEntry)) {
-        $remoteInfo = [
-            'labels'  => is_array($cachedEntry['labels'] ?? null) ? $cachedEntry['labels'] : [],
-            'created' => is_string($cachedEntry['created'] ?? null) ? $cachedEntry['created'] : '',
-        ];
-    } else {
-        $remoteInfo = fetchRemoteImageInfo($registry, $repository, $tag);
-        if ( ! empty($remoteInfo['labels'])) {
-            $cache[$cache_key] = $remoteInfo;
-            $cache_updated     = true;
-        }
-    }
+    $cachedEntry = $fetched[$cache_key] ?? $cache[$cache_key] ?? null;
+    $remoteInfo  = [
+        'labels'  => is_array($cachedEntry) && is_array($cachedEntry['labels'] ?? null) ? $cachedEntry['labels'] : [],
+        'created' => is_array($cachedEntry) && is_string($cachedEntry['created'] ?? null) ? $cachedEntry['created'] : '',
+    ];
 
     $remoteLabels   = $remoteInfo['labels'];
     $remote_version = empty($remoteLabels) ? "Unknown" : extractVersionFromLabels($remoteLabels);
