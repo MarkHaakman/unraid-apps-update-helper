@@ -15,7 +15,7 @@ The `.references/` directory holds several independent git repositories vendored
 ## Repository layout
 
 - `src/usr/local/emhttp/plugins/app-update-helper/` — the actual plugin payload, deployed verbatim to that path on Unraid:
-  - `api.php` — backend: inspects running Docker containers via `docker inspect`, resolves each image's registry/repository/tag, queries the registry API (Docker Hub / GHCR / etc.) for the remote image's OCI labels, extracts and compares semantic versions, and returns JSON. Results are cached in `/tmp/docker_versions_cache_v4.json` for 1 hour per `registry/repository:tag` key.
+  - `api.php` — backend: inspects running Docker containers via `docker inspect`, resolves each image's registry/repository/tag, queries the registry API (Docker Hub / GHCR / etc.) for the remote image's OCI labels, extracts and compares semantic versions, and returns JSON. Results are cached in `/tmp/docker_versions_cache_v6.json` per `registry/repository:tag` key, each entry with its own timestamp: 1 hour after a successful lookup (even if the image has no labels), 10 minutes after a failed one.
   - `AUH-Docker.page` — the `.page` file (Unraid's PHP+HTML tab-page format) that renders the "Docker" tab UI; menu placement is controlled by the `Menu="Docker"` header line. It fetches `api.php` via jQuery `$.getJSON` and renders the results table client-side. Rows with a detected update get **Update** / **Backup & Update** buttons (swal confirm → POST to `jobs.php`), a job status badge, and a live log modal that polls `jobs.php?action=status`.
   - `AUH-Settings.page` — Settings > User Utilities page (`Menu="Utilities"`, also the plugin's `launch` target) saving backup options via Unraid's `/update.php` to `/boot/config/plugins/app-update-helper/app-update-helper.cfg`; `default.cfg` holds the defaults.
   - `include/common.php` — shared helpers (`auh*` functions): config loading, template detection (`templates-user/my-<name>.xml`), CSRF token, and the `flock`-protected job list in `/tmp/app-update-helper/` (`jobs.json`, `logs/<id>.log`). The `Job` array shape is a PHPStan type alias in `phpstan.neon`; page files require this file by absolute path, so it's listed under `scanFiles`.
@@ -61,8 +61,9 @@ There is no automated test suite in this repository.
 
 ## Working on `api.php`
 
+- Uncached images are looked up together by `fetchRemoteImageInfos()`, which runs each step of the registry flow for all of them in parallel via `curl_multi` (`curlMultiFetch()`). Don't add a per-host connection limit: queued requests would spend their timeout waiting for a connection.
 - Registry auth follows the standard Docker Registry v2 Bearer token flow: probe `/v2/` for a `WWW-Authenticate` realm, fall back to `https://$registry/token` (needed for registries like GHCR that don't advertise the realm on an unauthenticated `HEAD /v2/`), then request a pull-scoped token.
 - `lscr.io` images are silently rewritten to pull from `ghcr.io` — LinuxServer.io publishes to both, but only GHCR's config blob is reliably used here.
 - Multi-arch manifest lists are resolved by picking the `amd64` platform entry (matches Unraid's target architecture).
 - Version comparison (`compareVersions`) is intentionally not a full semver library — it does staged comparisons (major → minor → patch → build suffix) and returns one of `"Major"`, `"Minor"`, `"Patch"`, `"Build"`, `"Update Available"` (unparseable but different), or `""` (no update / unknown).
-- The on-disk cache filename is versioned (`_v4`); bump the suffix if you change the cached data shape so stale caches from prior plugin versions aren't misread.
+- The on-disk cache filename is versioned (`_v6`); bump the suffix if you change the cached data shape so stale caches from prior plugin versions aren't misread.

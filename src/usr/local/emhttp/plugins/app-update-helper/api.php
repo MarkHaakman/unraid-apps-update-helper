@@ -85,13 +85,14 @@ function curlMultiFetch(CurlMultiHandle $mh, array $requests): array
  * so the total time is a handful of round trips instead of growing with the number of images.
  *
  * @param array<string, array{0: string, 1: string, 2: string}> $images cache key => [registry, repository, tag]
- * @return array<string, array{labels: array<string, mixed>, created: string}> keyed like $images
+ * @return array<string, array{labels: array<string, mixed>, created: string, found: bool}> keyed like $images;
+ *         found is false when any step of the lookup failed, true when the image config was read (even without labels)
  */
 function fetchRemoteImageInfos(array $images): array
 {
     $results = [];
     foreach ($images as $key => $_) {
-        $results[$key] = ['labels' => [], 'created' => ''];
+        $results[$key] = ['labels' => [], 'created' => '', 'found' => false];
     }
     if ($images === []) {
         return $results;
@@ -210,20 +211,22 @@ function fetchRemoteImageInfos(array $images): array
         ];
     }
 
+    // Only 2xx bodies are kept: registry errors (401, 404, 429, ...) are JSON too and would pass for a config
     $configBodies     = [];
     $redirectRequests = [];
     foreach (curlMultiFetch($mh, $blobRequests) as $key => $response) {
-        $headerStr          = substr($response['body'], 0, $response['headerSize']);
-        $configBodies[$key] = substr($response['body'], $response['headerSize']);
+        $headerStr = substr($response['body'], 0, $response['headerSize']);
 
-        if ($response['code'] >= 300 && $response['code'] < 400 && preg_match('/^Location:\s*(.+)$/mi', $headerStr, $matches)) {
+        if ($response['code'] >= 200 && $response['code'] < 300) {
+            $configBodies[$key] = substr($response['body'], $response['headerSize']);
+        } elseif ($response['code'] >= 300 && $response['code'] < 400 && preg_match('/^Location:\s*(.+)$/mi', $headerStr, $matches)) {
             $redirectRequests[$key] = [CURLOPT_URL => trim($matches[1]), CURLOPT_FOLLOWLOCATION => true];
         }
     }
 
     // 6. Follow blob redirects (usually to a CDN) without forwarding the registry token
     foreach (curlMultiFetch($mh, $redirectRequests) as $key => $response) {
-        if ($response['body'] !== '') {
+        if ($response['code'] >= 200 && $response['code'] < 300) {
             $configBodies[$key] = $response['body'];
         }
     }
@@ -240,6 +243,7 @@ function fetchRemoteImageInfos(array $images): array
         $results[$key] = [
             'labels'  => is_array($configBlock['Labels'] ?? null) ? $configBlock['Labels'] : [],
             'created' => is_string($configData['created'] ?? null) ? $configData['created'] : '',
+            'found'   => true,
         ];
     }
 
@@ -334,17 +338,24 @@ function compareVersions(string $local, string $remote): string
 
 // --- MAIN EXECUTION ---
 
-// FIX: Bump cache version to v5 to add the "created" date alongside labels
-$cache_file = '/tmp/docker_versions_cache_v5.json';
-$cache      = [];
-if (file_exists($cache_file) && (time() - filemtime($cache_file)) < 3600) {
+// Each entry expires on its own clock: an hour after a successful lookup, 10 minutes after a failed one
+$cache_file       = '/tmp/docker_versions_cache_v6.json';
+$cache_ttl        = 3600;
+$cache_failed_ttl = 600;
+$cache            = [];
+if (file_exists($cache_file)) {
     $cacheRaw     = file_get_contents($cache_file);
     $cacheDecoded = is_string($cacheRaw) ? json_decode($cacheRaw, true) : null;
-    if (is_array($cacheDecoded)) {
-        $cache = $cacheDecoded;
+    foreach (is_array($cacheDecoded) ? $cacheDecoded : [] as $cache_key => $entry) {
+        if ( ! is_array($entry) || ! is_int($entry['fetched'] ?? null)) {
+            continue;
+        }
+        $ttl = ($entry['found'] ?? false) === true ? $cache_ttl : $cache_failed_ttl;
+        if (time() - $entry['fetched'] < $ttl) {
+            $cache[$cache_key] = $entry;
+        }
     }
 }
-$cache_updated = false;
 
 $psOutput      = shell_exec("docker ps -aq");
 $container_ids = is_string($psOutput) ? trim($psOutput) : '';
@@ -377,13 +388,8 @@ foreach ($containers as $c) {
     }
 }
 
-$fetched = fetchRemoteImageInfos($uncached);
-foreach ($fetched as $cache_key => $remoteInfo) {
-    // Failed lookups aren't cached, so they are retried on the next load
-    if ( ! empty($remoteInfo['labels'])) {
-        $cache[$cache_key] = $remoteInfo;
-        $cache_updated     = true;
-    }
+foreach (fetchRemoteImageInfos($uncached) as $cache_key => $remoteInfo) {
+    $cache[$cache_key] = $remoteInfo + ['fetched' => time()];
 }
 
 foreach ($containers as $c) {
@@ -412,7 +418,7 @@ foreach ($containers as $c) {
 
     $cache_key = "{$registry}/{$repository}:{$tag}";
 
-    $cachedEntry = $fetched[$cache_key] ?? $cache[$cache_key] ?? null;
+    $cachedEntry = $cache[$cache_key] ?? null;
     $remoteInfo  = [
         'labels'  => is_array($cachedEntry) && is_array($cachedEntry['labels'] ?? null) ? $cachedEntry['labels'] : [],
         'created' => is_array($cachedEntry) && is_string($cachedEntry['created'] ?? null) ? $cachedEntry['created'] : '',
@@ -435,7 +441,8 @@ foreach ($containers as $c) {
     ];
 }
 
-if ($cache_updated) {
+// Expired entries were dropped on load, so writing also prunes them from the file
+if ($uncached !== []) {
     file_put_contents($cache_file, json_encode($cache));
 }
 
