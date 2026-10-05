@@ -46,6 +46,7 @@ $auhBackupReady = auhBackupDestinationValid(auhLoadConfig());
     .auh-modal h3 { margin: 0 0 10px 0; font-size: 16px; }
     .auh-modal pre { height: 50vh; overflow: auto; background: #000; color: #ddd; padding: 10px; margin: 0 0 10px 0; font-size: 12px; white-space: pre-wrap; word-break: break-word; }
     .auh-modal .auh-modal-footer { text-align: right; }
+    .auh-modal .auh-modal-hint { margin-right: 1em; opacity: 0.7; }
 </style>
 
 <div class="title">
@@ -76,6 +77,7 @@ $auhBackupReady = auhBackupDestinationValid(auhLoadConfig());
         <h3 id="auh-log-title"></h3>
         <pre id="auh-log-content"></pre>
         <div class="auh-modal-footer">
+            <span class="auh-modal-hint">Closing this window does not stop the job; it keeps running in the background. Reopen this log any time with "View log" in the Actions column.</span>
             <input type="button" id="auh-log-close" value="Close">
         </div>
     </div>
