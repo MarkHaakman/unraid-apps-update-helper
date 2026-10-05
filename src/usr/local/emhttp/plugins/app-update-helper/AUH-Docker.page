@@ -77,7 +77,7 @@ $auhBackupReady = auhBackupDestinationValid(auhLoadConfig());
         <h3 id="auh-log-title"></h3>
         <pre id="auh-log-content"></pre>
         <div class="auh-modal-footer">
-            <span class="auh-modal-hint">Closing this window does not stop the job; it keeps running in the background. Reopen this log any time with "View log" in the Actions column.</span>
+            <span class="auh-modal-hint" id="auh-log-hint">Closing this window does not stop the job; it keeps running in the background. Reopen this log any time with "View log" in the Actions column.</span>
             <input type="button" id="auh-log-close" value="Close">
         </div>
     </div>
@@ -264,6 +264,7 @@ function updateLogTitle() {
     if (!job) return;
     let status = {queued: 'queued', running: 'running', done: 'finished', failed: 'failed'}[job.status] || job.status;
     $("#auh-log-title").text(`${jobLabel(job)} of ${job.container} (${status})`);
+    $("#auh-log-hint").toggle(isJobActive(job));
 }
 
 function openLog(jobId) {
